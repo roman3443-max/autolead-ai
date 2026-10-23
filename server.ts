@@ -2,9 +2,10 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
+import { runPipeline } from './src/pipeline.js'
 
 const app = express()
-const PORT = 3001
+const PORT = process.env.PORT || 3001
 const rootDir = process.cwd()
 
 app.use(cors())
@@ -37,18 +38,18 @@ app.put('/api/leads/:id', (req, res) => {
   res.json(leads[idx])
 })
 
-// Скачать PDF
+// Скачать КП (HTML/PDF)
 app.get('/api/leads/:id/pdf', (req, res) => {
   const leads = readJSON('leads_db.json')
   const lead = leads.find((l: any) => l.id === req.params.id)
-  if (!lead?.pdf_file) return res.status(404).json({ error: 'PDF не найден' })
+  if (!lead?.pdf_file) return res.status(404).json({ error: 'КП не найдено' })
 
-  const pdfPath = path.join(rootDir, 'kp_final', lead.pdf_file)
-  if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: 'Файл не существует' })
+  const filePath = path.join(rootDir, 'kp_final', lead.pdf_file)
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не существует' })
 
-  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Type', 'text/html')
   res.setHeader('Content-Disposition', `inline; filename="${lead.pdf_file}"`)
-  fs.createReadStream(pdfPath).pipe(res)
+  fs.createReadStream(filePath).pipe(res)
 })
 
 // Получить сектора
@@ -63,7 +64,6 @@ app.post('/api/sectors', (req, res) => {
   sectors.push(newSector)
   writeJSON('sectors.json', sectors)
 
-  // Авто-распределение лидов по bounding box сектора
   const leads = readJSON('leads_db.json')
   const updatedLeads = leads.map((lead: any) => {
     if (lead.coordinates && newSector.polygon) {
@@ -83,7 +83,6 @@ app.post('/api/sectors', (req, res) => {
     return lead
   })
   writeJSON('leads_db.json', updatedLeads)
-
   res.json(newSector)
 })
 
@@ -114,6 +113,60 @@ app.get('/api/analytics', (req, res) => {
     }))
   }
   res.json(stats)
+})
+
+// 🚀 НОВЫЙ ENDPOINT: Запуск пайплайна поиска лидов
+app.post('/api/run-pipeline', async (req, res) => {
+  try {
+    const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body
+    const supplierConfig = readJSON('supplier_config.json')
+    const supplierName = supplierConfig?.name || 'УралАвтоОпт'
+    
+    console.log(`📥 Запрос на поиск: city=${city}, industry=${industry}, limit=${limit}`)
+    
+    // Запуск пайплайна
+    const newLeads = await runPipeline(city, industry, limit, supplierName)
+    
+    if (newLeads.length === 0) {
+      return res.status(400).json({ error: 'Не найдено лидов' })
+    }
+    
+    // Добавление новых лидов в базу (проверка на дубликаты по домену)
+    const existingLeads = readJSON('leads_db.json')
+    const existingDomains = new Set(existingLeads.map((l: any) => l.domain))
+    
+    let addedCount = 0
+    for (const lead of newLeads) {
+      if (!existingDomains.has(lead.domain)) {
+        const fileName = `${lead.company_name.replace(/[^a-z0-9а-яё]/gi, '_')}.html`
+        const newLead = {
+          ...lead,
+          id: `lead_${Date.now()}_${addedCount}`,
+          status: 'new',
+          pdf_file: fileName,
+          comments: [],
+          status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
+          sector_id: undefined,
+          assigned_manager_id: undefined
+        }
+        existingLeads.push(newLead)
+        addedCount++
+      }
+    }
+    
+    writeJSON('leads_db.json', existingLeads)
+    
+    console.log(`✅ Добавлено ${addedCount} новых лидов`)
+    res.json({ 
+      success: true, 
+      added: addedCount,
+      total: newLeads.length,
+      message: `Найдено ${newLeads.length} компаний, успешно добавлено ${addedCount} новых лидов`
+    })
+  } catch (error) {
+    console.error('❌ Ошибка пайплайна:', error)
+    res.status(500).json({ error: 'Ошибка при запуске пайплайна', details: String(error) })
+  }
 })
 
 app.listen(PORT, () => {

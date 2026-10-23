@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useRef } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X } from 'lucide-react'
+import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X, Search } from 'lucide-react'
 import L from 'leaflet'
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
@@ -40,7 +40,8 @@ export default function App() {
   const [sectors, setSectors] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const mapRef = useRef<any>(null)
+  const [isPipelineRunning, setIsPipelineRunning] = useState(false)
+  const mapRef = useRef<L.Map | null>(null)
   
   const [supplier, setSupplier] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -61,12 +62,9 @@ export default function App() {
 
   useEffect(() => { loadData() }, [])
 
-  // Пересчитываем размер карты при переключении на вкладку
   useEffect(() => {
     if (activeTab === 'map' && mapRef.current) {
-      setTimeout(() => {
-        mapRef.current?.invalidateSize()
-      }, 100)
+      setTimeout(() => { mapRef.current?.invalidateSize() }, 100)
     }
   }, [activeTab])
 
@@ -86,6 +84,33 @@ export default function App() {
     } catch (e) {
       console.error('Error loading data:', e)
       setLoading(false)
+    }
+  }
+
+  const handleRunPipeline = async () => {
+    const confirmed = window.confirm('Запустить AI-поиск новых лидов (автозапчасти, Екатеринбург)?\nЭто займет 1-2 минуты.')
+    if (!confirmed) return
+    
+    setIsPipelineRunning(true)
+    try {
+      const res = await fetch(`${API_URL}/api/run-pipeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ city: 'Екатеринбург', industry: 'автозапчасти', limit: 5 })
+      })
+      
+      const data = await res.json()
+      
+      if (res.ok) {
+        alert(`✅ Успех!\n${data.message}`)
+        loadData() // Перезагружаем таблицу с новыми лидами
+      } else {
+        alert(`❌ Ошибка: ${data.error}`)
+      }
+    } catch (e) {
+      alert('❌ Ошибка соединения с сервером. Убедитесь, что бэкенд запущен.')
+    } finally {
+      setIsPipelineRunning(false)
     }
   }
 
@@ -118,16 +143,16 @@ export default function App() {
   }
 
   const handleDownloadPDF = async (lead: Lead) => {
-    if (!lead.pdf_file) { alert('PDF не сгенерирован'); return }
+    if (!lead.pdf_file) { alert('КП еще не сгенерировано'); return }
     try {
       const res = await fetch(`${API_URL}/api/leads/${lead.id}/pdf`)
       if (res.ok) {
         const blob = await res.blob()
         window.open(URL.createObjectURL(blob), '_blank')
       } else {
-        alert('PDF не найден')
+        alert('Файл КП не найден на сервере')
       }
-    } catch (e) { alert('Ошибка скачивания PDF') }
+    } catch (e) { alert('Ошибка скачивания КП') }
   }
 
   const handleAddComment = async () => {
@@ -162,20 +187,33 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0F172A', color: '#F8FAFC', fontFamily: 'sans-serif', padding: '20px' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h1 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '4px' }}>B2B Lead Pipeline</h1>
-          <p style={{ color: '#94A3B8', fontSize: '14px' }}>Генератор целевых лидов и персональных КП</p>
+          <p style={{ color: '#94A3B8', fontSize: '14px' }}>AI-генератор целевых лидов и персональных КП</p>
         </div>
-        <button
-          onClick={() => { setTempSupplier(supplier); setIsSupplierModalOpen(true) }}
-          style={{ backgroundColor: '#334155', border: '1px solid #475569', color: 'white', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <Briefcase size={16} /> Поставщик: {supplier.name}
-        </button>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button
+            onClick={handleRunPipeline}
+            disabled={isPipelineRunning}
+            style={{ 
+              backgroundColor: isPipelineRunning ? '#64748B' : '#10B981', 
+              border: 'none', color: 'white', padding: '8px 16px', borderRadius: '6px', 
+              cursor: isPipelineRunning ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600' 
+            }}
+          >
+            <Search size={16} /> {isPipelineRunning ? 'Поиск...' : 'Запустить поиск'}
+          </button>
+          <button
+            onClick={() => { setTempSupplier(supplier); setIsSupplierModalOpen(true) }}
+            style={{ backgroundColor: '#334155', border: '1px solid #475569', color: 'white', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+          >
+            <Briefcase size={16} /> Поставщик: {supplier.name}
+          </button>
+        </div>
       </header>
 
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', borderBottom: '1px solid #334155', paddingBottom: '12px' }}>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', borderBottom: '1px solid #334155', paddingBottom: '12px', overflowX: 'auto' }}>
         {[
           { id: 'table', label: 'Таблица лидов', icon: Users },
           { id: 'map', label: 'Карта и сектора', icon: MapIcon },
@@ -185,7 +223,7 @@ export default function App() {
           <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} style={{
             backgroundColor: activeTab === tab.id ? '#3B82F6' : 'transparent',
             border: 'none', color: 'white', padding: '8px 16px', borderRadius: '6px',
-            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px'
+            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', whiteSpace: 'nowrap'
           }}>
             <tab.icon size={16} /> {tab.label}
           </button>
