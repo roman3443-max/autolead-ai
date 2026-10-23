@@ -1,11 +1,9 @@
-﻿import { useState, useEffect } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet'
+﻿import { useState, useEffect, useRef } from 'react'
+import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X } from 'lucide-react'
 import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
 
-// Fix Leaflet icons
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
@@ -42,16 +40,13 @@ export default function App() {
   const [sectors, setSectors] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const mapRef = useRef<L.Map | null>(null)
   
   const [supplier, setSupplier] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('supplier_config')
       if (saved) {
-        try {
-          return JSON.parse(saved)
-        } catch (e) {
-          console.error('Failed to parse supplier config')
-        }
+        try { return JSON.parse(saved) } catch (e) { console.error(e) }
       }
     }
     return { name: 'УралАвтоОпт', contact: 'Петров И.С.' }
@@ -65,6 +60,15 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState('all')
 
   useEffect(() => { loadData() }, [])
+
+  // Пересчитываем размер карты при переключении на вкладку
+  useEffect(() => {
+    if (activeTab === 'map' && mapRef.current) {
+      setTimeout(() => {
+        mapRef.current?.invalidateSize()
+      }, 100)
+    }
+  }, [activeTab])
 
   const loadData = async () => {
     try {
@@ -320,12 +324,7 @@ export default function App() {
               center={[56.838011, 60.597474]} 
               zoom={12} 
               style={{ height: '100%', width: '100%' }}
-              whenCreated={(mapInstance) => {
-                // Force map to recalculate size
-                setTimeout(() => {
-                  mapInstance.invalidateSize()
-                }, 100)
-              }}
+              ref={mapRef}
             >
               <TileLayer 
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
