@@ -40,7 +40,7 @@ export default function App() {
   const [sectors, setSectors] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const mapRef = useRef<L.Map | null>(null)
+  const mapRef = useRef<any>(null)
   
   const [supplier, setSupplier] = useState(() => {
     if (typeof window !== 'undefined') {
