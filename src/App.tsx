@@ -40,7 +40,22 @@ export default function App() {
   const [sectors, setSectors] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [supplier, setSupplier] = useState({ name: 'УралАвтоОпт', contact: 'Петров И.С.' })
+  
+  // ИСПРАВЛЕНИЕ: Загружаем из localStorage при инициализации
+  const [supplier, setSupplier] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('supplier_config')
+      if (saved) {
+        try {
+          return JSON.parse(saved)
+        } catch (e) {
+          console.error('Failed to parse supplier config')
+        }
+      }
+    }
+    return { name: 'УралАвтоОпт', contact: 'Петров И.С.' }
+  })
+  
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false)
   const [tempSupplier, setTempSupplier] = useState(supplier)
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
@@ -83,10 +98,14 @@ export default function App() {
     if (selectedLead?.id === leadId) setSelectedLead({ ...lead, status: newStatus } as Lead)
   }
 
+  // ИСПРАВЛЕНИЕ: Сохраняем в localStorage при обновлении
   const handleSaveSupplier = () => {
     setSupplier(tempSupplier)
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('supplier_config', JSON.stringify(tempSupplier))
+    }
     setIsSupplierModalOpen(false)
-    alert('✅ Данные поставщика обновлены')
+    alert('✅ Данные поставщика обновлены и сохранены')
   }
 
   const handleCopyEmail = (email: string) => {
