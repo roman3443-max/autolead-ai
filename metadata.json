@@ -1,0 +1,7 @@
+{
+  "name": "AutoLead AI",
+  "description": "AI-powered lead generation for auto parts suppliers that finds shops, matches inventory, and generates personalized commercial proposals for CRM.",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

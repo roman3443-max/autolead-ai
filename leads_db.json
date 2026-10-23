@@ -1,0 +1,115 @@
+[
+  {
+    "id": "1",
+    "company_name": "ООО АвтоПартс",
+    "domain": "rossko.ru",
+    "city": "Екатеринбург",
+    "address": "ул. Малышева, 51",
+    "coordinates": {
+      "lat": 56.838011,
+      "lng": 60.597474
+    },
+    "lpr": [
+      {
+        "name": "Васильев Сергей Иванович",
+        "position": "Директор по снабжению"
+      }
+    ],
+    "lpr_emails": [
+      "vasilev@rossko.ru"
+    ],
+    "brands": [
+      "Toyota",
+      "Bosch",
+      "TRW"
+    ],
+    "lead_score": 100,
+    "lead_tier": "A",
+    "status": "in_progress",
+    "pdf_file": "OOO_AutoParts.pdf",
+    "comments": [
+      "тест"
+    ],
+    "status_history": [
+      {
+        "status": "in_progress",
+        "date": "2026-10-23 12:00"
+      }
+    ]
+  },
+  {
+    "id": "2",
+    "company_name": "Сеть КРУГЛОСУТОЧНЫХ автомагазинов",
+    "domain": "autoekb.ru",
+    "city": "Екатеринбург",
+    "address": "пр. Ленина, 24",
+    "coordinates": {
+      "lat": 56.8519,
+      "lng": 60.6122
+    },
+    "lpr": [
+      {
+        "name": "Соколов Михаил Александрович",
+        "position": "Руководитель B2B-направления"
+      }
+    ],
+    "lpr_emails": [
+      "sokolov@autoekb.ru"
+    ],
+    "brands": [
+      "LADA",
+      "ВАЗ",
+      "ГАЗ"
+    ],
+    "lead_score": 100,
+    "lead_tier": "A",
+    "status": "contacted",
+    "pdf_file": "Set_Avtomagazinov.pdf",
+    "comments": [],
+    "status_history": [
+      {
+        "status": "new",
+        "date": "2026-10-23 10:00"
+      },
+      {
+        "status": "contacted",
+        "date": "23.10.2026, 14:06:56"
+      }
+    ]
+  },
+  {
+    "id": "3",
+    "company_name": "Авторазборы в Екатеринбурге",
+    "domain": "auto-razbory.ru",
+    "city": "Екатеринбург",
+    "address": "ул. 8 Марта, 10",
+    "coordinates": {
+      "lat": 56.8431,
+      "lng": 60.6044
+    },
+    "lpr": [
+      {
+        "name": "Павлов Сергей Николаевич",
+        "position": "Генеральный директор"
+      }
+    ],
+    "lpr_emails": [
+      "pavlov@auto-razbory.ru"
+    ],
+    "brands": [
+      "Toyota",
+      "Nissan",
+      "Denso"
+    ],
+    "lead_score": 100,
+    "lead_tier": "A",
+    "status": "new",
+    "comments": [],
+    "status_history": [
+      {
+        "status": "new",
+        "date": "2026-10-23 11:00"
+      }
+    ]
+  }
+]

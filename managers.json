@@ -1,0 +1,18 @@
+[
+  {
+    "id": "mgr_1",
+    "name": "Иванов Иван Иванович",
+    "email": "ivanov@uralavtoopt.ru",
+    "phone": "+7 (343) 123-45-67",
+    "position": "Старший менеджер",
+    "active": true
+  },
+  {
+    "id": "mgr_2",
+    "name": "Петрова Анна Сергеевна",
+    "email": "petrova@uralavtoopt.ru",
+    "phone": "+7 (343) 765-43-21",
+    "position": "Менеджер по работе с ключевыми клиентами",
+    "active": true
+  }
+]
