@@ -1,14 +1,16 @@
 ﻿import { useState, useEffect } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X } from 'lucide-react'
 import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 
+// Fix Leaflet icons
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 })
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001'
@@ -41,7 +43,6 @@ export default function App() {
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   
-  // ИСПРАВЛЕНИЕ: Загружаем из localStorage при инициализации
   const [supplier, setSupplier] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('supplier_config')
@@ -79,7 +80,7 @@ export default function App() {
       setAnalytics(await aRes.json())
       setLoading(false)
     } catch (e) {
-      console.error(e)
+      console.error('Error loading data:', e)
       setLoading(false)
     }
   }
@@ -98,14 +99,13 @@ export default function App() {
     if (selectedLead?.id === leadId) setSelectedLead({ ...lead, status: newStatus } as Lead)
   }
 
-  // ИСПРАВЛЕНИЕ: Сохраняем в localStorage при обновлении
   const handleSaveSupplier = () => {
     setSupplier(tempSupplier)
     if (typeof window !== 'undefined') {
       localStorage.setItem('supplier_config', JSON.stringify(tempSupplier))
     }
     setIsSupplierModalOpen(false)
-    alert('✅ Данные поставщика обновлены и сохранены')
+    alert('✅ Данные поставщика обновлены')
   }
 
   const handleCopyEmail = (email: string) => {
@@ -144,7 +144,7 @@ export default function App() {
     (searchQuery === '' || l.company_name.toLowerCase().includes(searchQuery.toLowerCase()))
   )
 
-  if (loading) return <div style={{ color: 'white', padding: 40 }}>Загрузка системы...</div>
+  if (loading) return <div style={{ color: 'white', padding: 40, textAlign: 'center' }}>Загрузка системы...</div>
 
   const getStatusColor = (s: string) => ({
     new: '#64748B', contacted: '#3B82F6', in_progress: '#8B5CF6',
@@ -308,16 +308,35 @@ export default function App() {
       )}
 
       {activeTab === 'map' && (
-        <div>
+        <div style={{ height: 'calc(100vh - 200px)', minHeight: '600px' }}>
           <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '16px', marginBottom: '16px' }}>
             <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>Карта лидов и секторов</h3>
-            <p style={{ color: '#94A3B8', fontSize: '13px' }}>Показано {sectors.length} секторов и {filteredLeads.filter(l => l.coordinates).length} лидов на карте</p>
+            <p style={{ color: '#94A3B8', fontSize: '13px' }}>
+              Показано {sectors.length} секторов и {filteredLeads.filter(l => l.coordinates).length} лидов на карте
+            </p>
           </div>
-          <div style={{ height: '600px', borderRadius: '12px', overflow: 'hidden', border: '1px solid #334155' }}>
-            <MapContainer center={[56.838011, 60.597474]} zoom={12} style={{ height: '100%', width: '100%' }}>
-              <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <div style={{ height: 'calc(100% - 80px)', borderRadius: '12px', overflow: 'hidden', border: '1px solid #334155' }}>
+            <MapContainer 
+              center={[56.838011, 60.597474]} 
+              zoom={12} 
+              style={{ height: '100%', width: '100%' }}
+              whenCreated={(mapInstance) => {
+                // Force map to recalculate size
+                setTimeout(() => {
+                  mapInstance.invalidateSize()
+                }, 100)
+              }}
+            >
+              <TileLayer 
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
               {sectors.map((sec: any) => (
-                <Polygon key={sec.id} pathOptions={{ color: sec.color, fillColor: sec.color, fillOpacity: 0.2, weight: 2 }} positions={sec.polygon.geometry.coordinates[0].map((c: any) => [c[1], c[0]])}>
+                <Polygon 
+                  key={sec.id} 
+                  pathOptions={{ color: sec.color || '#3B82F6', fillColor: sec.color || '#3B82F6', fillOpacity: 0.2, weight: 2 }} 
+                  positions={sec.polygon?.geometry?.coordinates?.[0]?.map((c: any) => [c[1], c[0]]) || []}
+                >
                   <Popup>
                     <b>{sec.name}</b><br />
                     Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}
@@ -325,7 +344,10 @@ export default function App() {
                 </Polygon>
               ))}
               {filteredLeads.map(lead => lead.coordinates && (
-                <Marker key={lead.id} position={[lead.coordinates.lat, lead.coordinates.lng]}>
+                <Marker 
+                  key={lead.id} 
+                  position={[lead.coordinates.lat, lead.coordinates.lng]}
+                >
                   <Popup>
                     <b>{lead.company_name}</b><br />
                     {lead.city}<br />
