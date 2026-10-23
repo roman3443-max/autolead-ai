@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
-import * as turf from '@turf/turf'
+import { point, polygon, booleanPointInPolygon } from '@turf/turf'
 
 const app = express()
 const PORT = 3001
