@@ -1,8 +1,7 @@
 ﻿import { useState, useEffect } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { Users, Map as MapIcon, BarChart3, Briefcase, Download, Copy, X } from 'lucide-react'
-import 'leaflet/dist/leaflet.css'
+import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X } from 'lucide-react'
 import L from 'leaflet'
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
@@ -12,14 +11,26 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 })
 
-   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001'
 
 interface Lead {
-  id: string; company_name: string; domain: string; city: string; address?: string;
-  coordinates?: { lat: number; lng: number }; lpr: { name: string; position: string }[];
-  lpr_emails: string[]; brands: string[]; lead_score: number; lead_tier: 'A' | 'B' | 'C';
-  status: string; pdf_file?: string; comments?: string[]; status_history?: any[];
-  sector_id?: string; assigned_manager_id?: string;
+  id: string
+  company_name: string
+  domain: string
+  city: string
+  address?: string
+  coordinates?: { lat: number; lng: number }
+  lpr: { name: string; position: string }[]
+  lpr_emails: string[]
+  brands: string[]
+  lead_score: number
+  lead_tier: 'A' | 'B' | 'C'
+  status: string
+  pdf_file?: string
+  comments?: string[]
+  status_history?: any[]
+  sector_id?: string
+  assigned_manager_id?: string
 }
 
 export default function App() {
@@ -52,7 +63,10 @@ export default function App() {
       setSectors(await sRes.json())
       setAnalytics(await aRes.json())
       setLoading(false)
-    } catch (e) { console.error(e); setLoading(false) }
+    } catch (e) {
+      console.error(e)
+      setLoading(false)
+    }
   }
 
   const handleStatusChange = async (leadId: string, newStatus: string) => {
@@ -60,7 +74,7 @@ export default function App() {
     await fetch(`${API_URL}/api/leads/${leadId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         status: newStatus,
         status_history: [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
       })
@@ -84,8 +98,12 @@ export default function App() {
     if (!lead.pdf_file) { alert('PDF не сгенерирован'); return }
     try {
       const res = await fetch(`${API_URL}/api/leads/${lead.id}/pdf`)
-      if (res.ok) { const blob = await res.blob(); window.open(URL.createObjectURL(blob), '_blank') }
-      else alert('PDF не найден')
+      if (res.ok) {
+        const blob = await res.blob()
+        window.open(URL.createObjectURL(blob), '_blank')
+      } else {
+        alert('PDF не найден')
+      }
     } catch (e) { alert('Ошибка скачивания PDF') }
   }
 
@@ -102,12 +120,12 @@ export default function App() {
     setSelectedLead(updated)
   }
 
-  const filteredLeads = leads.filter(l => 
+  const filteredLeads = leads.filter(l =>
     (statusFilter === 'all' || l.status === statusFilter) &&
     (searchQuery === '' || l.company_name.toLowerCase().includes(searchQuery.toLowerCase()))
   )
 
-  if (loading) return <div style={{color:'white', padding:40}}>Загрузка системы...</div>
+  if (loading) return <div style={{ color: 'white', padding: 40 }}>Загрузка системы...</div>
 
   const getStatusColor = (s: string) => ({
     new: '#64748B', contacted: '#3B82F6', in_progress: '#8B5CF6',
@@ -126,7 +144,7 @@ export default function App() {
           <h1 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '4px' }}>B2B Lead Pipeline</h1>
           <p style={{ color: '#94A3B8', fontSize: '14px' }}>Генератор целевых лидов и персональных КП</p>
         </div>
-        <button 
+        <button
           onClick={() => { setTempSupplier(supplier); setIsSupplierModalOpen(true) }}
           style={{ backgroundColor: '#334155', border: '1px solid #475569', color: 'white', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
         >
@@ -257,7 +275,7 @@ export default function App() {
                         <div style={{ display: 'flex', gap: '8px' }}>
                           <button onClick={() => setSelectedLead(lead)} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}>Открыть</button>
                           <button onClick={() => handleDownloadPDF(lead)} style={{ backgroundColor: lead.pdf_file ? '#10B981' : '#64748B', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <Download size={14}/> КП
+                            <Download size={14} /> КП
                           </button>
                         </div>
                       </td>
@@ -279,20 +297,20 @@ export default function App() {
           <div style={{ height: '600px', borderRadius: '12px', overflow: 'hidden', border: '1px solid #334155' }}>
             <MapContainer center={[56.838011, 60.597474]} zoom={12} style={{ height: '100%', width: '100%' }}>
               <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              {sectors.map(sec => (
+              {sectors.map((sec: any) => (
                 <Polygon key={sec.id} pathOptions={{ color: sec.color, fillColor: sec.color, fillOpacity: 0.2, weight: 2 }} positions={sec.polygon.geometry.coordinates[0].map((c: any) => [c[1], c[0]])}>
                   <Popup>
-                    <b>{sec.name}</b><br/>
-                    Менеджер: {managers.find(m => m.id === sec.manager_id)?.name || 'Не назначен'}
+                    <b>{sec.name}</b><br />
+                    Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}
                   </Popup>
                 </Polygon>
               ))}
               {filteredLeads.map(lead => lead.coordinates && (
                 <Marker key={lead.id} position={[lead.coordinates.lat, lead.coordinates.lng]}>
                   <Popup>
-                    <b>{lead.company_name}</b><br/>
-                    {lead.city}<br/>
-                    Скор: {lead.lead_score} | Tier: {lead.lead_tier}<br/>
+                    <b>{lead.company_name}</b><br />
+                    {lead.city}<br />
+                    Скор: {lead.lead_score} | Tier: {lead.lead_tier}<br />
                     Статус: {getStatusText(lead.status)}
                   </Popup>
                 </Marker>
@@ -383,9 +401,9 @@ export default function App() {
           <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', maxWidth: '700px', width: '100%', maxHeight: '80vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: 'bold' }}>{selectedLead.company_name}</h2>
-              <button onClick={() => setSelectedLead(null)} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }}><X size={24}/></button>
+              <button onClick={() => setSelectedLead(null)} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }}><X size={24} /></button>
             </div>
-            
+
             <div style={{ marginBottom: '24px' }}>
               <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Основная информация</h3>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
@@ -422,7 +440,7 @@ export default function App() {
             <div style={{ marginBottom: '24px' }}>
               <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>История статусов</h3>
               <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
-                {(selectedLead.status_history || []).map((item, idx) => (
+                {(selectedLead.status_history || []).map((item: any, idx: number) => (
                   <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #334155', fontSize: '13px' }}>
                     <span style={{ color: getStatusColor(item.status) }}>{getStatusText(item.status)}</span>
                     <span style={{ color: '#64748B', fontSize: '12px' }}>{item.date}</span>
@@ -434,12 +452,12 @@ export default function App() {
             <div style={{ marginBottom: '24px' }}>
               <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Комментарии</h3>
               <div style={{ maxHeight: '150px', overflowY: 'auto', marginBottom: '12px' }}>
-                {(selectedLead.comments || []).length === 0 ? <div style={{color:'#64748B', fontStyle:'italic'}}>Нет комментариев</div> :
-                  (selectedLead.comments || []).map((c, i) => <div key={i} style={{ backgroundColor: '#0F172A', padding: '10px', borderRadius: '6px', marginBottom: '6px', fontSize: '13px' }}>{c}</div>)}
+                {(selectedLead.comments || []).length === 0 ? <div style={{ color: '#64748B', fontStyle: 'italic' }}>Нет комментариев</div> :
+                  (selectedLead.comments || []).map((c: string, i: number) => <div key={i} style={{ backgroundColor: '#0F172A', padding: '10px', borderRadius: '6px', marginBottom: '6px', fontSize: '13px' }}>{c}</div>)}
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <input value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Новый комментарий..." 
-                  style={{ flex: 1, backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} 
+                <input value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Новый комментарий..."
+                  style={{ flex: 1, backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleAddComment() }}
                 />
                 <button onClick={handleAddComment} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Добавить</button>
@@ -460,11 +478,11 @@ export default function App() {
             <h2 style={{ marginBottom: '20px' }}>Настройки поставщика</h2>
             <div style={{ marginBottom: '16px' }}>
               <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Название компании</label>
-              <input value={tempSupplier.name} onChange={e => setTempSupplier({...tempSupplier, name: e.target.value})} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
+              <input value={tempSupplier.name} onChange={e => setTempSupplier({ ...tempSupplier, name: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
             </div>
             <div style={{ marginBottom: '24px' }}>
               <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Контактное лицо</label>
-              <input value={tempSupplier.contact} onChange={e => setTempSupplier({...tempSupplier, contact: e.target.value})} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
+              <input value={tempSupplier.contact} onChange={e => setTempSupplier({ ...tempSupplier, contact: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
               <button onClick={() => setIsSupplierModalOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
