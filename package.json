@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "npx tsx server.ts"
   },
   "dependencies": {
     "@turf/turf": "^7.0.0",
@@ -17,7 +18,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-leaflet": "^4.2.1",
-    "recharts": "^2.12.2"
+    "recharts": "^2.12.2",
+    "tsx": "^4.7.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
