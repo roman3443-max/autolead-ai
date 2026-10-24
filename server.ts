@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
-import { runPipeline } from './src/pipeline.js'
+   import { runPipeline } from './src/pipeline.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
