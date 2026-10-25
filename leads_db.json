@@ -176,5 +176,122 @@
         "date": "25.10.2026, 20:05:49"
       }
     ]
+  },
+  {
+    "company_name": "Оптом.ру - товары оптом, оптовые фирмы, оптовая продажа товаров, оптовики",
+    "domain": "optom.ru",
+    "city": "������������",
+    "address": "",
+    "coordinates": {
+      "lat": 56.82438452464787,
+      "lng": 60.602255576203646
+    },
+    "lpr": [
+      {
+        "name": "Руководитель",
+        "position": "Директор"
+      }
+    ],
+    "lpr_emails": [],
+    "brands": [
+      "ГАЗ"
+    ],
+    "lead_score": 65,
+    "lead_tier": "B",
+    "business_size": "small",
+    "wholesale": true,
+    "reason": "",
+    "matched_skus": [
+      {
+        "sku": "GA-3302-2905004",
+        "brand": "ГАЗ",
+        "name": "Амортизатор передний (ГАЗ)",
+        "car": "Газель, Соболь",
+        "price": 1560,
+        "stock": 75
+      },
+      {
+        "sku": "GA-31105-1601280",
+        "brand": "ГАЗ",
+        "name": "Комплект сцепления",
+        "car": "ГАЗ 3110/3302 ЗМЗ-406",
+        "price": 5200,
+        "stock": 18
+      },
+      {
+        "sku": "BO-0986AF4036",
+        "brand": "Bosch",
+        "name": "Фильтр воздушный",
+        "car": "LADA Granta/Kalina/Priora",
+        "price": 420,
+        "stock": 140
+      },
+      {
+        "sku": "BO-1457433513",
+        "brand": "Bosch",
+        "name": "Колодки тормозные передние",
+        "car": "ВАЗ 2108-2115, Granta",
+        "price": 1180,
+        "stock": 86
+      },
+      {
+        "sku": "BO-1987432367",
+        "brand": "Bosch",
+        "name": "Щётка стеклоочистителя б/к 600мм",
+        "car": "универсальная",
+        "price": 890,
+        "stock": 200
+      },
+      {
+        "sku": "BO-0261230018",
+        "brand": "Bosch",
+        "name": "Лямбда-зонд универсальный",
+        "car": "ВАЗ, ГАЗ, иномарки",
+        "price": 3450,
+        "stock": 34
+      },
+      {
+        "sku": "DE-27011-0H010",
+        "brand": "Denso",
+        "name": "Свеча зажигания Nickel",
+        "car": "Toyota Corolla/Camry",
+        "price": 520,
+        "stock": 320
+      },
+      {
+        "sku": "DE-90919-01253",
+        "brand": "Denso",
+        "name": "Катушка зажигания",
+        "car": "Toyota Corolla 1.6",
+        "price": 4200,
+        "stock": 28
+      },
+      {
+        "sku": "DE-210-0404",
+        "brand": "Denso",
+        "name": "Радиатор охлаждения",
+        "car": "Toyota Corolla/Camry",
+        "price": 9800,
+        "stock": 12
+      },
+      {
+        "sku": "TY-04465-52260",
+        "brand": "Toyota",
+        "name": "Колодки тормозные задние оригинал",
+        "car": "Toyota Corolla E15",
+        "price": 2650,
+        "stock": 45
+      }
+    ],
+    "id": "lead_1792956067728_0",
+    "status": "new",
+    "pdf_file": null,
+    "comments": [],
+    "status_history": [
+      {
+        "status": "new",
+        "date": "25.10.2026, 22:21:07"
+      }
+    ]
   }
 ]

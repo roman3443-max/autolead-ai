@@ -1,7 +1,8 @@
-﻿import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import 'leaflet/dist/leaflet.css'
 import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X, Search } from 'lucide-react'
+import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X, Search, Mail, Copy, Send } from 'lucide-react'
 import L from 'leaflet'
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
@@ -25,12 +26,29 @@ interface Lead {
   brands: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
+  business_size?: 'small' | 'medium' | 'large' | 'unknown'
+  wholesale?: boolean
+  reason?: string
   status: string
-  pdf_file?: string
+  pdf_file?: string | null
   comments?: string[]
   status_history?: any[]
   sector_id?: string
   assigned_manager_id?: string
+}
+
+interface Toast { id: number; text: string; type: 'success' | 'error' | 'info' }
+
+interface PipelineJob {
+  id: string
+  status: string
+  stage: string
+  processed: number
+  total: number
+  added: number
+  totalFound: number
+  message: string
+  error?: string
 }
 
 export default function App() {
@@ -42,7 +60,20 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [isPipelineRunning, setIsPipelineRunning] = useState(false)
   const mapRef = useRef<L.Map | null>(null)
-  
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const [isRunModalOpen, setIsRunModalOpen] = useState(false)
+  const [runParams, setRunParams] = useState({ city: 'Екатеринбург', industry: 'автозапчасти', limit: 5 })
+  const [job, setJob] = useState<PipelineJob | null>(null)
+  const [copiedLetters, setCopiedLetters] = useState<Record<string, boolean>>({})
+
+  const toast = (text: string, type: Toast['type'] = 'info') => {
+    const id = Date.now() + Math.random()
+    setToasts(t => [...t, { id, text, type }])
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000)
+  }
+
   const [supplier, setSupplier] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('supplier_config')
@@ -52,7 +83,7 @@ export default function App() {
     }
     return { name: 'УралАвтоОпт', contact: 'Петров И.С.' }
   })
-  
+
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false)
   const [tempSupplier, setTempSupplier] = useState(supplier)
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
@@ -87,29 +118,55 @@ export default function App() {
     }
   }
 
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  const pollJob = (jobId: string) => {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/pipeline-status/${jobId}`)
+        if (!res.ok) return
+        const data: PipelineJob = await res.json()
+        setJob(data)
+        if (data.status === 'done') {
+          stopPolling()
+          setIsPipelineRunning(false)
+          toast(data.message, 'success')
+          loadData()
+        } else if (data.status === 'error') {
+          stopPolling()
+          setIsPipelineRunning(false)
+          toast(data.error || 'Ошибка пайплайна', 'error')
+        }
+      } catch { /* сервер недоступен — продолжаем опрос */ }
+    }, 2000)
+  }
+
+  useEffect(() => () => stopPolling(), [])
+
   const handleRunPipeline = async () => {
-    const confirmed = window.confirm('Запустить AI-поиск новых лидов (автозапчасти, Екатеринбург)?\nЭто займет 1-2 минуты.')
-    if (!confirmed) return
-    
+    if (isPipelineRunning) return
     setIsPipelineRunning(true)
+    setJob(null)
     try {
       const res = await fetch(`${API_URL}/api/run-pipeline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ city: 'Екатеринбург', industry: 'автозапчасти', limit: 5 })
+        body: JSON.stringify(runParams)
       })
-      
       const data = await res.json()
-      
-      if (res.ok) {
-        alert(`✅ Успех!\n${data.message}`)
-        loadData() // Перезагружаем таблицу с новыми лидами
-      } else {
-        alert(`❌ Ошибка: ${data.error}`)
+      if (!res.ok || !data.jobId) {
+        toast(data.error || 'Не удалось запустить поиск', 'error')
+        setIsPipelineRunning(false)
+        return
       }
+      setIsRunModalOpen(false)
+      toast('Поиск запущен. Это займёт 1–3 минуты...', 'info')
+      pollJob(data.jobId)
     } catch (e) {
-      alert('❌ Ошибка соединения с сервером. Убедитесь, что бэкенд запущен.')
-    } finally {
+      toast('Ошибка соединения с сервером', 'error')
       setIsPipelineRunning(false)
     }
   }
@@ -134,25 +191,56 @@ export default function App() {
       localStorage.setItem('supplier_config', JSON.stringify(tempSupplier))
     }
     setIsSupplierModalOpen(false)
-    alert('✅ Данные поставщика обновлены')
+    toast('Данные поставщика обновлены', 'success')
   }
 
   const handleCopyEmail = (email: string) => {
     navigator.clipboard.writeText(email)
-    alert(`Email ${email} скопирован`)
+    toast(`Email ${email} скопирован`, 'success')
+  }
+
+  const buildLetter = (lead: Lead) => {
+    const topBrands = lead.brands.slice(0, 3).join(', ')
+    const subject = `Коммерческое предложение для ${lead.company_name}${topBrands ? ' | ' + topBrands : ''}`
+    const body = [
+      `Добрый день, ${lead.lpr[0]?.name || 'коллеги'}!`,
+      '',
+      `Меня зовут ${supplier.contact}, я представляю компанию ${supplier.name}.`,
+      `Мы проанализировали ваш ассортимент и подготовили персонализированное предложение${topBrands ? ' по брендам: ' + topBrands : ''}.`,
+      '',
+      'Во вложении — коммерческое предложение с ценами и условиями сотрудничества.',
+      '',
+      'С уважением,',
+      `${supplier.contact}`,
+      supplier.name
+    ].join('\n')
+    return { subject, body }
+  }
+
+  const handleCopyLetter = (lead: Lead) => {
+    const { subject, body } = buildLetter(lead)
+    navigator.clipboard.writeText(`Тема: ${subject}\n\n${body}`)
+    setCopiedLetters(c => ({ ...c, [lead.id]: true }))
+    toast('Текст письма скопирован. Вставьте в почту и прикрепите КП', 'success')
+  }
+
+  const handleMailto = (lead: Lead) => {
+    const { subject, body } = buildLetter(lead)
+    window.location.href = `mailto:${lead.lpr_emails[0] || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    setCopiedLetters(c => ({ ...c, [lead.id]: true }))
   }
 
   const handleDownloadPDF = async (lead: Lead) => {
-    if (!lead.pdf_file) { alert('КП еще не сгенерировано'); return }
+    if (!lead.pdf_file) { toast('КП ещё не сгенерировано', 'error'); return }
     try {
       const res = await fetch(`${API_URL}/api/leads/${lead.id}/pdf`)
       if (res.ok) {
         const blob = await res.blob()
         window.open(URL.createObjectURL(blob), '_blank')
       } else {
-        alert('Файл КП не найден на сервере')
+        toast('Файл КП не найден на сервере', 'error')
       }
-    } catch (e) { alert('Ошибка скачивания КП') }
+    } catch (e) { toast('Ошибка скачивания КП', 'error') }
   }
 
   const handleAddComment = async () => {
@@ -194,7 +282,7 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
           <button
-            onClick={handleRunPipeline}
+            onClick={() => setIsRunModalOpen(true)}
             disabled={isPipelineRunning}
             style={{ 
               backgroundColor: isPipelineRunning ? '#64748B' : '#10B981', 
@@ -202,7 +290,7 @@ export default function App() {
               cursor: isPipelineRunning ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600' 
             }}
           >
-            <Search size={16} /> {isPipelineRunning ? 'Поиск...' : 'Запустить поиск'}
+            <Search size={16} /> {isPipelineRunning ? 'Поиск выполняется...' : 'Запустить поиск'}
           </button>
           <button
             onClick={() => { setTempSupplier(supplier); setIsSupplierModalOpen(true) }}
@@ -294,7 +382,17 @@ export default function App() {
                       <td style={{ padding: '16px 12px' }}>
                         <div style={{ fontWeight: '600', marginBottom: '4px' }}>{lead.company_name}</div>
                         <div style={{ color: '#64748B', fontSize: '13px' }}>{lead.domain}</div>
-                        <div style={{ color: '#64748B', fontSize: '12px' }}>{lead.city}</div>
+                        <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '4px' }}>{lead.city}</div>
+                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                          {lead.business_size && lead.business_size !== 'unknown' && (
+                            <span style={{ backgroundColor: '#1E3A5F', color: '#93C5FD', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
+                              {{ small: 'Малый бизнес', medium: 'Средний бизнес', large: 'Крупный бизнес' }[lead.business_size]}
+                            </span>
+                          )}
+                          {lead.wholesale && (
+                            <span style={{ backgroundColor: '#14532D', color: '#86EFAC', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>Опт</span>
+                          )}
+                        </div>
                       </td>
                       <td style={{ padding: '16px 12px' }}>
                         {lead.lpr.map((p, idx) => (
@@ -333,8 +431,11 @@ export default function App() {
                         </select>
                       </td>
                       <td style={{ padding: '16px 12px' }}>
-                        <div style={{ display: 'flex', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                           <button onClick={() => setSelectedLead(lead)} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}>Открыть</button>
+                          <button onClick={() => handleCopyLetter(lead)} title="Скопировать текст письма" style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <Copy size={14} /> Письмо
+                          </button>
                           <button onClick={() => handleDownloadPDF(lead)} style={{ backgroundColor: lead.pdf_file ? '#10B981' : '#64748B', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <Download size={14} /> КП
                           </button>
@@ -488,7 +589,31 @@ export default function App() {
                 <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Сайт</div><div style={{ fontSize: '14px' }}>{selectedLead.domain}</div></div>
                 <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Город</div><div style={{ fontSize: '14px' }}>{selectedLead.city}</div></div>
                 <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Lead Score</div><div style={{ fontSize: '14px', fontWeight: 'bold' }}>{selectedLead.lead_score}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Tier</div><div style={{ display: 'inline-block', backgroundColor: selectedLead.lead_tier === 'A' ? '#10B981' : '#F59E0B', padding: '4px 12px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>Tier {selectedLead.lead_tier}</div></div>
+                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Tier</div><div style={{ display: 'inline-block', backgroundColor: selectedLead.lead_tier === 'A' ? '#10B981' : selectedLead.lead_tier === 'B' ? '#F59E0B' : '#EF4444', padding: '4px 12px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>Tier {selectedLead.lead_tier}</div></div>
+                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Размер бизнеса</div><div style={{ fontSize: '14px' }}>{{ small: 'Малый', medium: 'Средний', large: 'Крупный', unknown: 'Не определён' }[selectedLead.business_size || 'unknown']}{selectedLead.wholesale ? ' · опт' : ''}</div></div>
+                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Статус</div><div style={{ fontSize: '14px' }}>{getStatusText(selectedLead.status)}</div></div>
+              </div>
+              {selectedLead.reason && (
+                <div style={{ marginTop: '12px', backgroundColor: '#0F172A', borderLeft: '3px solid #3B82F6', padding: '10px 12px', borderRadius: '0 6px 6px 0', fontSize: '13px', color: '#94A3B8' }}>
+                  <b style={{ color: '#F8FAFC' }}>Почему этому лиду стоит продавать:</b> {selectedLead.reason}
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Готовность к отправке</h3>
+              <div style={{ backgroundColor: '#0F172A', padding: '12px', borderRadius: '8px' }}>
+                {[
+                  { label: 'ЛПР найден', done: selectedLead.lpr.length > 0 && selectedLead.lpr[0].name !== 'Руководитель' },
+                  { label: 'Email есть', done: (selectedLead.lpr_emails || []).length > 0 },
+                  { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
+                  { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
+                  { label: 'КП отправлено', done: ['contacted', 'in_progress', 'converted'].includes(selectedLead.status) }
+                ].map((item, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '13px', color: item.done ? '#86EFAC' : '#64748B' }}>
+                    <span style={{ width: '16px', textAlign: 'center' }}>{item.done ? '✓' : '○'}</span> {item.label}
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -498,9 +623,14 @@ export default function App() {
                 <div key={i} style={{ backgroundColor: '#0F172A', padding: '12px', borderRadius: '8px', marginBottom: '8px' }}>
                   <div style={{ fontWeight: '600', marginBottom: '4px' }}>{p.name}</div>
                   <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px' }}>{p.position}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '13px', color: '#64748B' }}>{selectedLead.lpr_emails[i]}</span>
-                    <button onClick={() => handleCopyEmail(selectedLead.lpr_emails[i])} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', color: '#94A3B8', fontSize: '11px' }}>Copy</button>
+                    {selectedLead.lpr_emails[i] && (
+                      <>
+                        <button onClick={() => handleCopyEmail(selectedLead.lpr_emails[i])} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', color: '#94A3B8', fontSize: '11px' }}>Copy</button>
+                        <button onClick={handleMailto.bind(null, selectedLead)} title="Открыть в почтовом клиенте" style={{ backgroundColor: '#334155', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', color: '#94A3B8', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}><Mail size={11} /> В почту</button>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
@@ -542,7 +672,9 @@ export default function App() {
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <button onClick={() => handleCopyLetter(selectedLead)} style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}><Copy size={14} /> Скопировать письмо</button>
+              <button onClick={() => handleMailto(selectedLead)} disabled={!selectedLead.lpr_emails[0]} style={{ backgroundColor: selectedLead.lpr_emails[0] ? '#3B82F6' : '#64748B', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}><Send size={14} /> В почту</button>
               <button onClick={() => handleDownloadPDF(selectedLead)} style={{ backgroundColor: selectedLead.pdf_file ? '#10B981' : '#64748B', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Скачать КП</button>
               <button onClick={() => setSelectedLead(null)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '10px 20px', color: '#F8FAFC', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Закрыть</button>
             </div>
@@ -569,6 +701,54 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {isRunModalOpen && !isPipelineRunning && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setIsRunModalOpen(false)}>
+          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', width: '420px' }} onClick={e => e.stopPropagation()}>
+            <h2 style={{ marginBottom: '8px' }}>Запуск AI-поиска</h2>
+            <p style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '20px' }}>Поиск компаний, анализ сайтов и генерация КП займёт 1–3 минуты. Можно закрыть окно — поиск продолжится.</p>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Город</label>
+              <input value={runParams.city} onChange={e => setRunParams({ ...runParams, city: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
+            </div>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Отрасль</label>
+              <input value={runParams.industry} onChange={e => setRunParams({ ...runParams, industry: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
+            </div>
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Сколько компаний искать (1–20)</label>
+              <input type="number" min={1} max={20} value={runParams.limit} onChange={e => setRunParams({ ...runParams, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
+            </div>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button onClick={() => setIsRunModalOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
+              <button onClick={handleRunPipeline} style={{ backgroundColor: '#10B981', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Запустить</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isPipelineRunning && job && (
+        <div style={{ position: 'fixed', bottom: '24px', right: '24px', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '12px', padding: '16px 20px', width: '320px', zIndex: 999 }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '8px' }}>{job.message}</div>
+          <div style={{ height: '8px', backgroundColor: '#0F172A', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${Math.min(100, (job.processed / Math.max(job.total, 1)) * 100)}%`, backgroundColor: '#3B82F6', transition: 'width 0.5s' }} />
+          </div>
+          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '6px' }}>{job.processed} / {job.total}</div>
+        </div>
+      )}
+
+      <div style={{ position: 'fixed', top: '20px', right: '20px', zIndex: 2000, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            backgroundColor: t.type === 'success' ? '#14532D' : t.type === 'error' ? '#7F1D1D' : '#1E3A5F',
+            border: `1px solid ${t.type === 'success' ? '#22C55E' : t.type === 'error' ? '#EF4444' : '#3B82F6'}`,
+            borderRadius: '8px', padding: '12px 16px', color: 'white', fontSize: '13px', maxWidth: '360px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
+          }}>
+            {t.text}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

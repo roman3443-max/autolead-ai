@@ -1,0 +1,13 @@
+{
+  "weights": {
+    "lpr": 25,
+    "emails": 15,
+    "brands": 20,
+    "businessSize": 15,
+    "wholesale": 10,
+    "content": 15
+  },
+  "tiers": { "a": 75, "b": 50 },
+  "businessSizeScores": { "large": 15, "medium": 10, "small": 5, "unknown": 2 },
+  "notes": "Сумма weights должна быть 100. tiers: >= a -> Tier A, >= b -> Tier B, иначе Tier C. businessSizeScores переопределяет вес businessSize по размеру бизнеса."
+}

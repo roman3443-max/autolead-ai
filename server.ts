@@ -115,57 +115,124 @@ app.get('/api/analytics', (req, res) => {
   res.json(stats)
 })
 
-// 🚀 НОВЫЙ ENDPOINT: Запуск пайплайна поиска лидов
-app.post('/api/run-pipeline', async (req, res) => {
-  try {
-    const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body
-    const supplierConfig = readJSON('supplier_config.json')
-    const supplierName = supplierConfig?.name || 'УралАвтоОпт'
-    
-    console.log(`📥 Запрос на поиск: city=${city}, industry=${industry}, limit=${limit}`)
-    
-    // Запуск пайплайна
-    const newLeads = await runPipeline(city, industry, limit, supplierName)
-    
-    if (newLeads.length === 0) {
-      return res.status(400).json({ error: 'Не найдено лидов' })
-    }
-    
-    // Добавление новых лидов в базу (проверка на дубликаты по домену)
-    const existingLeads = readJSON('leads_db.json')
-    const existingDomains = new Set(existingLeads.map((l: any) => l.domain))
-    
-    let addedCount = 0
-    for (const lead of newLeads) {
-      if (!existingDomains.has(lead.domain)) {
-        const newLead = {
-          ...lead,
-          id: `lead_${Date.now()}_${addedCount}`,
-          status: 'new',
-          pdf_file: (lead as any).pdf_file || null,
-          comments: [],
-          status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
-          sector_id: undefined,
-          assigned_manager_id: undefined
+// 🚀 Асинхронный запуск пайплайна с прогрессом
+interface PipelineJob {
+  id: string
+  status: 'running' | 'done' | 'error'
+  stage: string
+  processed: number
+  total: number
+  added: number
+  totalFound: number
+  message: string
+  error?: string
+  startedAt: string
+}
+
+const pipelineJobs: Record<string, PipelineJob> = {}
+
+app.post('/api/run-pipeline', (req, res) => {
+  const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 5, 1), 20)
+
+  // Пропускаем, если пайплайн уже выполняется
+  const running = Object.values(pipelineJobs).find(j => j.status === 'running')
+  if (running) {
+    return res.json({ jobId: running.id, alreadyRunning: true })
+  }
+
+  const jobId = `job_${Date.now()}`
+  pipelineJobs[jobId] = {
+    id: jobId,
+    status: 'running',
+    stage: 'search',
+    processed: 0,
+    total: safeLimit,
+    added: 0,
+    totalFound: 0,
+    message: 'Поиск компаний...',
+    startedAt: new Date().toISOString()
+  }
+  console.log(`📥 Запрос на поиск: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
+
+  const stageText: Record<string, string> = {
+    search: 'Поиск компаний...',
+    enrich: 'Анализ сайтов...',
+    kp: 'Генерация КП...',
+    done: 'Готово'
+  }
+
+  ;(async () => {
+    try {
+      const supplierConfig = readJSON('supplier_config.json')
+      const supplierName = supplierConfig?.name || 'УралАвтоОпт'
+
+      const newLeads = await runPipeline(city, industry, safeLimit, supplierName, (stage, processed, total) => {
+        const job = pipelineJobs[jobId]
+        if (job) {
+          job.stage = stage
+          job.processed = processed
+          job.total = Math.max(total, 1)
+          job.message = stageText[stage] || stage
         }
-        existingLeads.push(newLead)
-        addedCount++
+      })
+
+      const job = pipelineJobs[jobId]
+
+      if (newLeads.length === 0) {
+        job.status = 'error'
+        job.error = 'Компании не найдены. Попробуйте изменить город/отрасль или проверьте API-ключи.'
+        return
+      }
+
+      // Добавление новых лидов в базу (проверка на дубликаты по домену)
+      const existingLeads = readJSON('leads_db.json')
+      const existingDomains = new Set(existingLeads.map((l: any) => l.domain))
+
+      let addedCount = 0
+      for (const lead of newLeads) {
+        if (!existingDomains.has(lead.domain)) {
+          const newLead = {
+            ...lead,
+            id: `lead_${Date.now()}_${addedCount}`,
+            status: 'new',
+            pdf_file: (lead as any).pdf_file || null,
+            comments: [],
+            status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
+            sector_id: undefined,
+            assigned_manager_id: undefined
+          }
+          existingLeads.push(newLead)
+          addedCount++
+        }
+      }
+
+      writeJSON('leads_db.json', existingLeads)
+
+      job.status = 'done'
+      job.added = addedCount
+      job.totalFound = newLeads.length
+      job.message = addedCount > 0
+        ? `Найдено ${newLeads.length}, добавлено ${addedCount} новых лидов`
+        : `Найдено ${newLeads.length} компаний, все уже есть в базе`
+      console.log(`✅ Job ${jobId}: ${job.message}`)
+    } catch (error) {
+      console.error('❌ Ошибка пайплайна:', error)
+      const job = pipelineJobs[jobId]
+      if (job) {
+        job.status = 'error'
+        job.error = 'Ошибка при запуске пайплайна: ' + String(error)
       }
     }
-    
-    writeJSON('leads_db.json', existingLeads)
-    
-    console.log(`✅ Добавлено ${addedCount} новых лидов`)
-    res.json({ 
-      success: true, 
-      added: addedCount,
-      total: newLeads.length,
-      message: `Найдено ${newLeads.length} компаний, успешно добавлено ${addedCount} новых лидов`
-    })
-  } catch (error) {
-    console.error('❌ Ошибка пайплайна:', error)
-    res.status(500).json({ error: 'Ошибка при запуске пайплайна', details: String(error) })
-  }
+  })()
+
+  res.json({ jobId })
+})
+
+app.get('/api/pipeline-status/:jobId', (req, res) => {
+  const job = pipelineJobs[req.params.jobId]
+  if (!job) return res.status(404).json({ error: 'Задача не найдена' })
+  res.json(job)
 })
 
 const server = app.listen(PORT, '0.0.0.0', () => {

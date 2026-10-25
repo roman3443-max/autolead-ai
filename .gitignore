@@ -19,6 +19,7 @@ build/
 
 # Generated files
 kp_final/
+geocache.json
 
 # Logs
 *.log
