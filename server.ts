@@ -168,6 +168,10 @@ app.post('/api/run-pipeline', async (req, res) => {
   }
 })
 
-app.listen(PORT, () => {
-  console.log(`✅ Сервер запущен на http://localhost:${PORT}`)
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Сервер запущен на порту ${PORT}`)
+})
+
+server.on('error', (err: any) => {
+  console.error('❌ Ошибка запуска сервера:', err)
 })
