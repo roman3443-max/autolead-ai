@@ -26,7 +26,7 @@
     "lead_score": 100,
     "lead_tier": "A",
     "status": "in_progress",
-    "pdf_file": "OOO_AutoParts.pdf",
+    "pdf_file": null,
     "comments": [
       "тест"
     ],
@@ -64,7 +64,7 @@
     "lead_score": 100,
     "lead_tier": "A",
     "status": "contacted",
-    "pdf_file": "Set_Avtomagazinov.pdf",
+    "pdf_file": null,
     "comments": [],
     "status_history": [
       {
@@ -109,6 +109,71 @@
       {
         "status": "new",
         "date": "2026-10-23 11:00"
+      }
+    ]
+  },
+  {
+    "company_name": "ОптЛист — поставщики и производители оптом",
+    "domain": "optlist.ru",
+    "city": "������������",
+    "address": "",
+    "coordinates": {
+      "lat": 56.82456034498646,
+      "lng": 60.57669633181722
+    },
+    "lpr": [
+      {
+        "name": "Руководитель",
+        "position": "Директор"
+      }
+    ],
+    "lpr_emails": [],
+    "brands": [
+      "LADA",
+      "ГАЗ"
+    ],
+    "lead_score": 85,
+    "lead_tier": "A",
+    "id": "lead_1792946410085_0",
+    "status": "new",
+    "pdf_file": null,
+    "comments": [],
+    "status_history": [
+      {
+        "status": "new",
+        "date": "25.10.2026, 19:40:10"
+      }
+    ]
+  },
+  {
+    "company_name": "Оптом.ру - товары оптом, оптовые фирмы, оптовая продажа товаров, оптовики",
+    "domain": "www.optom.ru",
+    "city": "������������",
+    "address": "",
+    "coordinates": {
+      "lat": 56.844518637908614,
+      "lng": 60.57289714939839
+    },
+    "lpr": [
+      {
+        "name": "Руководитель",
+        "position": "Директор"
+      }
+    ],
+    "lpr_emails": [],
+    "brands": [
+      "ГАЗ"
+    ],
+    "lead_score": 85,
+    "lead_tier": "A",
+    "id": "lead_1792947949834_0",
+    "status": "new",
+    "pdf_file": null,
+    "comments": [],
+    "status_history": [
+      {
+        "status": "new",
+        "date": "25.10.2026, 20:05:49"
       }
     ]
   }

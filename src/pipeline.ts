@@ -1,8 +1,20 @@
-import { tavily } from 'tavily-js'
+import { tavily } from '@tavily/core'
 import FirecrawlApp from '@mendable/firecrawl-js'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import fs from 'fs'
 import path from 'path'
+
+// Загрузка переменных окружения из .env (для локального запуска; на Railway переменные заданы в dashboard)
+const envPath = path.join(process.cwd(), '.env')
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf-8').split('\n').forEach(line => {
+    const eq = line.indexOf('=')
+    if (eq > 0 && !line.trim().startsWith('#')) {
+      const key = line.slice(0, eq).trim()
+      if (!process.env[key]) process.env[key] = line.slice(eq + 1).trim()
+    }
+  })
+}
 
 // Инициализация API (ключи берутся из .env)
 const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY || '' })
@@ -30,8 +42,8 @@ export async function searchCompanies(city: string, industry: string, limit: num
   
   try {
     const response = await tvly.search(query, {
-      search_depth: 'basic',
-      max_results: limit
+      searchDepth: 'basic',
+      maxResults: limit
     })
     
     const companies = response.results.map((result: any) => ({
@@ -50,7 +62,7 @@ export async function searchCompanies(city: string, industry: string, limit: num
 }
 
 // Этап 2: Обогащение данных через Firecrawl
-export async function enrichCompanyData(companies: any[]) {
+export async function enrichCompanyData(companies: any[], city: string) {
   console.log('🕷️ Обогащение данных...')
   
   const enrichedLeads: LeadData[] = []
@@ -106,7 +118,10 @@ export async function generateKP(lead: LeadData, supplierName: string) {
   console.log(`📝 Генерация КП для ${lead.company_name}...`)
   
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
+    const model = genAI.getGenerativeModel(
+      { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
+      { timeout: 60000 }
+    )
     
     const prompt = `
 Создай персонализированное коммерческое предложение от поставщика "${supplierName}" для компании "${lead.company_name}".
@@ -120,9 +135,20 @@ export async function generateKP(lead: LeadData, supplierName: string) {
 6. Призыв к действию и контакты.
 Формат: Чистый HTML с базовыми тегами (<h1>, <h2>, <p>, <ul>, <li>, <b>), без <html> и <body>, только контент.
 `
-    
-    const result = await model.generateContent(prompt)
-    const kpText = result.response.text()
+    // Gemini иногда отвечает 503 (перегрузка) — повторяем до 3 раз с паузой
+    let kpText = ''
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await model.generateContent(prompt)
+        kpText = result.response.text()
+        break
+      } catch (err: any) {
+        const is503 = String(err?.message || err).includes('503')
+        if (!is503 || attempt === 3) throw err
+        console.log(`  ⏳ Gemini перегружен (503), повтор ${attempt + 1}/3...`)
+        await new Promise(r => setTimeout(r, 8000))
+      }
+    }
     
     const fileName = `${lead.company_name.replace(/[^a-z0-9а-яё]/gi, '_')}.html`
     const filePath = path.join(process.cwd(), 'kp_final', fileName)
@@ -202,9 +228,10 @@ export async function runPipeline(city: string = 'Екатеринбург', ind
   const companies = await searchCompanies(city, industry, limit)
   if (companies.length === 0) return []
   
-  const leads = await enrichCompanyData(companies)
+  const leads = await enrichCompanyData(companies, city)
   for (const lead of leads) {
-    await generateKP(lead, supplierName)
+    const kpFile = await generateKP(lead, supplierName)
+    if (kpFile) (lead as any).pdf_file = kpFile
   }
   console.log('✅ Пайплайн завершен!')
   return leads

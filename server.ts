@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
-   import { runPipeline } from './src/pipeline.ts'
+import { runPipeline } from './src/pipeline.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -138,12 +138,11 @@ app.post('/api/run-pipeline', async (req, res) => {
     let addedCount = 0
     for (const lead of newLeads) {
       if (!existingDomains.has(lead.domain)) {
-        const fileName = `${lead.company_name.replace(/[^a-z0-9а-яё]/gi, '_')}.html`
         const newLead = {
           ...lead,
           id: `lead_${Date.now()}_${addedCount}`,
           status: 'new',
-          pdf_file: fileName,
+          pdf_file: (lead as any).pdf_file || null,
           comments: [],
           status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
           sector_id: undefined,
