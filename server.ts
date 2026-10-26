@@ -131,15 +131,19 @@ interface PipelineJob {
 
 const pipelineJobs: Record<string, PipelineJob> = {}
 
-app.post('/api/run-pipeline', (req, res) => {
-  const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
-  const safeLimit = Math.min(Math.max(parseInt(limit) || 5, 1), 20)
+// Единый запуск пайплайна в фоне. meta — служебные поля, которые попадут в новые лида (источник)
+function launchPipelineJob(params: {
+  city: string; industry: string; limit: number
+  options?: any
+  source?: { search_task_id?: string; search_task_name?: string }
+  onComplete?: (result: { status: string; found: number; added: number; error?: string }) => void
+}): { jobId: string } | null {
+  const { city, industry, limit, options, source, onComplete } = params
+  const safeLimit = Math.min(Math.max(parseInt(limit as any) || 5, 1), 20)
 
   // Пропускаем, если пайплайн уже выполняется
   const running = Object.values(pipelineJobs).find(j => j.status === 'running')
-  if (running) {
-    return res.json({ jobId: running.id, alreadyRunning: true })
-  }
+  if (running) return null
 
   const jobId = `job_${Date.now()}`
   pipelineJobs[jobId] = {
@@ -153,7 +157,7 @@ app.post('/api/run-pipeline', (req, res) => {
     message: 'Поиск компаний...',
     startedAt: new Date().toISOString()
   }
-  console.log(`📥 Запрос на поиск: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
+  console.log(`📥 Запуск поиска: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
 
   const stageText: Record<string, string> = {
     search: 'Поиск компаний...',
@@ -175,13 +179,14 @@ app.post('/api/run-pipeline', (req, res) => {
           job.total = Math.max(total, 1)
           job.message = stageText[stage] || stage
         }
-      })
+      }, options)
 
       const job = pipelineJobs[jobId]
 
       if (newLeads.length === 0) {
         job.status = 'error'
         job.error = 'Компании не найдены. Попробуйте изменить город/отрасль или проверьте API-ключи.'
+        onComplete?.({ status: 'error', found: 0, added: 0, error: job.error })
         return
       }
 
@@ -194,6 +199,7 @@ app.post('/api/run-pipeline', (req, res) => {
         if (!existingDomains.has(lead.domain)) {
           const newLead = {
             ...lead,
+            ...source,
             id: `lead_${Date.now()}_${addedCount}`,
             status: 'new',
             pdf_file: (lead as any).pdf_file || null,
@@ -216,6 +222,7 @@ app.post('/api/run-pipeline', (req, res) => {
         ? `Найдено ${newLeads.length}, добавлено ${addedCount} новых лидов`
         : `Найдено ${newLeads.length} компаний, все уже есть в базе`
       console.log(`✅ Job ${jobId}: ${job.message}`)
+      onComplete?.({ status: 'done', found: newLeads.length, added: addedCount })
     } catch (error) {
       console.error('❌ Ошибка пайплайна:', error)
       const job = pipelineJobs[jobId]
@@ -223,16 +230,128 @@ app.post('/api/run-pipeline', (req, res) => {
         job.status = 'error'
         job.error = 'Ошибка при запуске пайплайна: ' + String(error)
       }
+      onComplete?.({ status: 'error', found: 0, added: 0, error: String(error) })
     }
   })()
 
-  res.json({ jobId })
+  return { jobId }
+}
+
+// Быстрый разовый запуск (без сохранённой задачи)
+app.post('/api/run-pipeline', (req, res) => {
+  const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
+  const launched = launchPipelineJob({ city, industry, limit })
+  if (!launched) {
+    const running = Object.values(pipelineJobs).find(j => j.status === 'running')
+    return res.json({ jobId: running?.id, alreadyRunning: true })
+  }
+  res.json({ jobId: launched.jobId })
 })
 
 app.get('/api/pipeline-status/:jobId', (req, res) => {
   const job = pipelineJobs[req.params.jobId]
   if (!job) return res.status(404).json({ error: 'Задача не найдена' })
   res.json(job)
+})
+
+// --- Задачи поиска (сущность "Поиск лидов"): параметры что/где/сколько + скоринг + обогащение ---
+const TASKS_FILE = 'search_tasks.json'
+
+interface SearchTask {
+  id: string
+  name: string
+  city: string
+  industry: string
+  limit: number
+  scoring?: any | null
+  use_ai?: boolean
+  use_geocode?: boolean
+  status: 'draft' | 'running' | 'done' | 'error'
+  last_run?: string | null
+  leads_found?: number
+  leads_added?: number
+  last_error?: string
+  created_at?: string
+}
+
+const getTasks = (): SearchTask[] => readJSON(TASKS_FILE)
+const saveTasks = (tasks: SearchTask[]) => writeJSON(TASKS_FILE, tasks)
+
+app.get('/api/search-tasks', (req, res) => {
+  res.json(getTasks())
+})
+
+app.post('/api/search-tasks', (req, res) => {
+  const tasks = getTasks()
+  const t: SearchTask = {
+    id: `task_${Date.now()}`,
+    status: 'draft',
+    last_run: null,
+    leads_found: 0,
+    leads_added: 0,
+    created_at: new Date().toISOString(),
+    ...req.body
+  }
+  tasks.push(t)
+  saveTasks(tasks)
+  res.json(t)
+})
+
+app.put('/api/search-tasks/:id', (req, res) => {
+  const tasks = getTasks()
+  const idx = tasks.findIndex((t: any) => t.id === req.params.id)
+  if (idx === -1) return res.status(404).json({ error: 'Задача не найдена' })
+  tasks[idx] = { ...tasks[idx], ...req.body, id: req.params.id }
+  saveTasks(tasks)
+  res.json(tasks[idx])
+})
+
+app.delete('/api/search-tasks/:id', (req, res) => {
+  const tasks = getTasks().filter((t: any) => t.id !== req.params.id)
+  saveTasks(tasks)
+  res.json({ success: true })
+})
+
+app.post('/api/search-tasks/:id/run', (req, res) => {
+  const tasks = getTasks()
+  const task = tasks.find((t: any) => t.id === req.params.id)
+  if (!task) return res.status(404).json({ error: 'Задача не найдена' })
+
+  const launched = launchPipelineJob({
+    city: task.city,
+    industry: task.industry,
+    limit: task.limit,
+    options: {
+      scoring: task.scoring || null,
+      useAI: task.use_ai !== false,
+      useGeocode: task.use_geocode !== false
+    },
+    source: { search_task_id: task.id, search_task_name: task.name },
+    onComplete: (result) => {
+      const current = getTasks()
+      const idx = current.findIndex((t: any) => t.id === task.id)
+      if (idx === -1) return
+      current[idx].status = result.status === 'done' ? 'done' : 'error'
+      current[idx].last_run = new Date().toISOString()
+      current[idx].leads_found = result.found
+      current[idx].leads_added = result.added
+      current[idx].last_error = result.error
+      saveTasks(current)
+    }
+  })
+
+  if (!launched) {
+    const running = Object.values(pipelineJobs).find(j => j.status === 'running')
+    return res.json({ jobId: running?.id, alreadyRunning: true })
+  }
+
+  // Сразу помечаем задачу как выполняющуюся
+  const idx = tasks.findIndex((t: any) => t.id === task.id)
+  tasks[idx].status = 'running'
+  tasks[idx].last_error = undefined
+  saveTasks(tasks)
+
+  res.json({ jobId: launched.jobId })
 })
 
 const server = app.listen(PORT, '0.0.0.0', () => {

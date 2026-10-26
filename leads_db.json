@@ -113,39 +113,6 @@
     ]
   },
   {
-    "company_name": "ОптЛист — поставщики и производители оптом",
-    "domain": "optlist.ru",
-    "city": "������������",
-    "address": "",
-    "coordinates": {
-      "lat": 56.82456034498646,
-      "lng": 60.57669633181722
-    },
-    "lpr": [
-      {
-        "name": "Руководитель",
-        "position": "Директор"
-      }
-    ],
-    "lpr_emails": [],
-    "brands": [
-      "LADA",
-      "ГАЗ"
-    ],
-    "lead_score": 85,
-    "lead_tier": "A",
-    "id": "lead_1792946410085_0",
-    "status": "new",
-    "pdf_file": null,
-    "comments": [],
-    "status_history": [
-      {
-        "status": "new",
-        "date": "25.10.2026, 19:40:10"
-      }
-    ]
-  },
-  {
     "company_name": "Оптом.ру - товары оптом, оптовые фирмы, оптовая продажа товаров, оптовики",
     "domain": "www.optom.ru",
     "city": "������������",
@@ -291,6 +258,86 @@
       {
         "status": "new",
         "date": "25.10.2026, 22:21:07"
+      }
+    ]
+  },
+  {
+    "company_name": "ОптЛист — поставщики и производители оптом",
+    "domain": "optlist.ru",
+    "city": "������������",
+    "address": "",
+    "coordinates": {
+      "lat": 56.83116198401193,
+      "lng": 60.59808527238312
+    },
+    "lpr": [
+      {
+        "name": "Руководитель",
+        "position": "Директор"
+      }
+    ],
+    "lpr_emails": [],
+    "brands": [
+      "LADA",
+      "ГАЗ"
+    ],
+    "lead_score": 55,
+    "lead_tier": "B",
+    "business_size": "small",
+    "wholesale": true,
+    "reason": "",
+    "matched_skus": [
+      {
+        "sku": "LA-1118-2905402",
+        "brand": "LADA",
+        "name": "Амортизатор передний (СААЗ)",
+        "car": "ВАЗ 1118 Kalina",
+        "price": 1350,
+        "stock": 120
+      },
+      {
+        "sku": "LA-2190-2905402",
+        "brand": "LADA",
+        "name": "Амортизатор задний (СААЗ)",
+        "car": "Granta/Калина II",
+        "price": 1250,
+        "stock": 130
+      },
+      {
+        "sku": "LA-2123-3501170",
+        "brand": "LADA",
+        "name": "Колодки тормозные передние (Euro)",
+        "car": "Нива Шевроле",
+        "price": 980,
+        "stock": 95
+      },
+      {
+        "sku": "GA-3302-2905004",
+        "brand": "ГАЗ",
+        "name": "Амортизатор передний (ГАЗ)",
+        "car": "Газель, Соболь",
+        "price": 1560,
+        "stock": 75
+      },
+      {
+        "sku": "GA-31105-1601280",
+        "brand": "ГАЗ",
+        "name": "Комплект сцепления",
+        "car": "ГАЗ 3110/3302 ЗМЗ-406",
+        "price": 5200,
+        "stock": 18
+      }
+    ],
+    "search_task_id": "task_1792987410737",
+    "search_task_name": "����: ������� ��� ���",
+    "id": "lead_1792987561757_0",
+    "status": "new",
+    "pdf_file": null,
+    "comments": [],
+    "status_history": [
+      {
+        "status": "new",
+        "date": "26.10.2026, 07:06:01"
       }
     ]
   }

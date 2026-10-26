@@ -35,22 +35,33 @@ interface ScoringConfig {
   businessSizeScores: { large: number; medium: number; small: number; unknown: number }
 }
 
+// Параметры конкретного запуска поиска (могут переопределять файл-конфиг)
+interface PipelineOptions {
+  scoring?: Partial<ScoringConfig> | null
+  useAI?: boolean
+  useGeocode?: boolean
+}
+
 const DEFAULT_SCORING: ScoringConfig = {
   weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
   tiers: { a: 75, b: 50 },
   businessSizeScores: { large: 15, medium: 10, small: 5, unknown: 2 }
 }
 
-function loadScoringConfig(): ScoringConfig {
+function loadScoringConfig(overrides?: Partial<ScoringConfig> | null): ScoringConfig {
   const cfg = readJSONFile('scoring_config.json', null)
-  if (!cfg) {
-    console.log('⚠️ scoring_config.json не найден — используются веса по умолчанию')
-    return DEFAULT_SCORING
-  }
-  const merged: ScoringConfig = {
+  const base: ScoringConfig = cfg ? {
     weights: { ...DEFAULT_SCORING.weights, ...(cfg.weights || {}) },
     tiers: { ...DEFAULT_SCORING.tiers, ...(cfg.tiers || {}) },
     businessSizeScores: { ...DEFAULT_SCORING.businessSizeScores, ...(cfg.businessSizeScores || {}) }
+  } : DEFAULT_SCORING
+  if (!cfg) {
+    console.log('⚠️ scoring_config.json не найден — используются веса по умолчанию')
+  }
+  const merged: ScoringConfig = {
+    weights: { ...base.weights, ...(overrides?.weights || {}) },
+    tiers: { ...base.tiers, ...(overrides?.tiers || {}) },
+    businessSizeScores: { ...base.businessSizeScores, ...(overrides?.businessSizeScores || {}) }
   }
   const sum = Object.values(merged.weights).reduce((a, b) => a + b, 0)
   if (sum !== 100) {
@@ -186,19 +197,21 @@ async function nominatimGeocode(query: string): Promise<{ lat: number; lng: numb
   }
 }
 
-async function getCoordinates(companyName: string, city: string): Promise<{ lat: number; lng: number }> {
+async function getCoordinates(companyName: string, city: string, useGeocode = true): Promise<{ lat: number; lng: number }> {
   const cacheKey = `${companyName}|${city}`
   if (geocodeCache[cacheKey]) return geocodeCache[cacheKey]
 
-  const exact = await nominatimGeocode(`${companyName}, ${city}`)
-  if (exact) {
-    geocodeCache[cacheKey] = exact
-    geocodeDirty = true
-    return exact
+  if (useGeocode) {
+    const exact = await nominatimGeocode(`${companyName}, ${city}`)
+    if (exact) {
+      geocodeCache[cacheKey] = exact
+      geocodeDirty = true
+      return exact
+    }
   }
 
   if (!cityCenterCache[city]) {
-    cityCenterCache[city] = (await nominatimGeocode(city)) || { lat: 56.838011, lng: 60.597474 }
+    cityCenterCache[city] = (useGeocode && await nominatimGeocode(city)) || { lat: 56.838011, lng: 60.597474 }
   }
   const center = cityCenterCache[city]
   // Если компанию не нашли — точка в районе центра города (без этого метка не появится на карте)
@@ -391,10 +404,11 @@ export async function searchCompanies(city: string, industry: string, limit: num
 }
 
 // --- Этап 2: Обогащение данных через Firecrawl ---
-export async function enrichCompanyData(companies: any[], city: string, onProgress?: (processed: number, total: number) => void) {
+export async function enrichCompanyData(companies: any[], city: string, onProgress?: (processed: number, total: number) => void, options?: PipelineOptions) {
   console.log('🕷️ Обогащение данных...')
-  const scoringCfg = loadScoringConfig()
+  const scoringCfg = loadScoringConfig(options?.scoring)
   const catalog = loadCatalog()
+  const useAI = options?.useAI ?? true
   const enrichedLeads: LeadData[] = []
 
   for (const [idx, company] of companies.entries()) {
@@ -412,8 +426,8 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
 
       const content = scrapeResult.markdown
 
-      // Сначала пробуем AI-извлечение, при неудаче — регэкспы
-      const ai = await extractWithGemini(company.company_name, company.domain, content)
+      // Сначала пробуем AI-извлечение (если включено), при неудаче — регэкспы
+      const ai = useAI ? await extractWithGemini(company.company_name, company.domain, content) : null
       const lpr = ai && ai.lpr.length > 0 ? ai.lpr : extractLPRRegex(content)
       const businessSize = ai ? ai.business_size : extractBusinessSizeRegex(content)
       const wholesale = ai ? ai.wholesale : hasWholesaleSignals(content)
@@ -425,7 +439,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const lpr_emails = [...new Set([...siteEmails, ...generated])].slice(0, 5)
 
       const brands = extractBrands(content)
-      const coordinates = await getCoordinates(company.company_name, city)
+      const coordinates = await getCoordinates(company.company_name, city, options?.useGeocode ?? true)
       const lead_score = calculateLeadScore(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: lpr_emails.length,
@@ -541,14 +555,15 @@ export async function runPipeline(
   industry: string = 'автозапчасти',
   limit: number = 5,
   supplierName: string = 'УралАвтоОпт',
-  onProgress?: (stage: string, processed: number, total: number) => void
+  onProgress?: (stage: string, processed: number, total: number) => void,
+  options?: PipelineOptions
 ) {
   console.log('🚀 Запуск пайплайна...')
   const companies = await searchCompanies(city, industry, limit)
   onProgress?.('search', companies.length, limit)
   if (companies.length === 0) return []
 
-  const leads = await enrichCompanyData(companies, city, (p, t) => onProgress?.('enrich', p, t))
+  const leads = await enrichCompanyData(companies, city, (p, t) => onProgress?.('enrich', p, t), options)
   for (let i = 0; i < leads.length; i++) {
     onProgress?.('kp', i, leads.length)
     const kpFile = await generateKP(leads[i], supplierName)

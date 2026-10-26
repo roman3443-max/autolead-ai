@@ -1,0 +1,26 @@
+[
+  {
+    "id": "task_1792987410737",
+    "status": "done",
+    "last_run": "2026-10-26T04:06:01.773Z",
+    "leads_found": 2,
+    "leads_added": 1,
+    "created_at": "2026-10-26T04:03:30.737Z",
+    "name": "����: ������� ��� ���",
+    "city": "������������",
+    "industry": "������������ ���",
+    "limit": 2,
+    "scoring": {
+      "weights": {
+        "lpr": 30,
+        "emails": 20,
+        "brands": 20,
+        "businessSize": 20,
+        "wholesale": 10,
+        "content": 0
+      }
+    },
+    "use_ai": false,
+    "use_geocode": true
+  }
+]

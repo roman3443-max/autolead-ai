@@ -35,6 +35,8 @@ interface Lead {
   status_history?: any[]
   sector_id?: string
   assigned_manager_id?: string
+  search_task_id?: string
+  search_task_name?: string
 }
 
 interface Toast { id: number; text: string; type: 'success' | 'error' | 'info' }
@@ -52,7 +54,7 @@ interface PipelineJob {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'table' | 'map' | 'managers' | 'analytics'>('table')
+  const [activeTab, setActiveTab] = useState<'search' | 'table' | 'map' | 'managers' | 'analytics'>('table')
   const [leads, setLeads] = useState<Lead[]>([])
   const [managers, setManagers] = useState<any[]>([])
   const [sectors, setSectors] = useState<any[]>([])
@@ -63,10 +65,10 @@ export default function App() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [toasts, setToasts] = useState<Toast[]>([])
-  const [isRunModalOpen, setIsRunModalOpen] = useState(false)
-  const [runParams, setRunParams] = useState({ city: 'Екатеринбург', industry: 'автозапчасти', limit: 5 })
   const [job, setJob] = useState<PipelineJob | null>(null)
   const [copiedLetters, setCopiedLetters] = useState<Record<string, boolean>>({})
+  const [searchTasks, setSearchTasks] = useState<any[]>([])
+  const [taskForm, setTaskForm] = useState<any | null>(null)
 
   const toast = (text: string, type: Toast['type'] = 'info') => {
     const id = Date.now() + Math.random()
@@ -91,7 +93,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { loadData(); loadTasks() }, [])
 
   useEffect(() => {
     if (activeTab === 'map' && mapRef.current) {
@@ -118,6 +120,13 @@ export default function App() {
     }
   }
 
+  const loadTasks = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/search-tasks`)
+      if (res.ok) setSearchTasks(await res.json())
+    } catch (e) { console.error('Error loading tasks:', e) }
+  }
+
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
@@ -135,10 +144,12 @@ export default function App() {
           setIsPipelineRunning(false)
           toast(data.message, 'success')
           loadData()
+          loadTasks()
         } else if (data.status === 'error') {
           stopPolling()
           setIsPipelineRunning(false)
           toast(data.error || 'Ошибка пайплайна', 'error')
+          loadTasks()
         }
       } catch { /* сервер недоступен — продолжаем опрос */ }
     }, 2000)
@@ -146,29 +157,73 @@ export default function App() {
 
   useEffect(() => () => stopPolling(), [])
 
-  const handleRunPipeline = async () => {
-    if (isPipelineRunning) return
+  // --- Сущность "Поиск лидов": задачи с параметрами ---
+  const startJobPolling = async (res: Response) => {
+    const data = await res.json()
+    if (!res.ok || !data.jobId) {
+      toast(data.error || 'Не удалось запустить поиск', 'error')
+      setIsPipelineRunning(false)
+      loadTasks()
+      return
+    }
+    if (data.alreadyRunning) {
+      toast('Поиск уже выполняется, показываю прогресс', 'info')
+    } else {
+      toast('Поиск запущен. Это займёт 1–3 минуты...', 'info')
+    }
+    setTaskForm(null)
+    pollJob(data.jobId)
+  }
+
+  const handleRunTask = async (task: any) => {
+    if (isPipelineRunning) { toast('Дождитесь завершения текущего поиска', 'error'); return }
     setIsPipelineRunning(true)
     setJob(null)
     try {
-      const res = await fetch(`${API_URL}/api/run-pipeline`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(runParams)
-      })
-      const data = await res.json()
-      if (!res.ok || !data.jobId) {
-        toast(data.error || 'Не удалось запустить поиск', 'error')
-        setIsPipelineRunning(false)
-        return
-      }
-      setIsRunModalOpen(false)
-      toast('Поиск запущен. Это займёт 1–3 минуты...', 'info')
-      pollJob(data.jobId)
+      const res = await fetch(`${API_URL}/api/search-tasks/${task.id}/run`, { method: 'POST' })
+      await startJobPolling(res)
     } catch (e) {
       toast('Ошибка соединения с сервером', 'error')
       setIsPipelineRunning(false)
     }
+  }
+
+  const handleSaveTask = async () => {
+    if (!taskForm) return
+    if (!taskForm.name?.trim() || !taskForm.city?.trim() || !taskForm.industry?.trim()) {
+      toast('Заполните название, город и отрасль', 'error')
+      return
+    }
+    try {
+      const isNew = !taskForm.id
+      const res = await fetch(isNew ? `${API_URL}/api/search-tasks` : `${API_URL}/api/search-tasks/${taskForm.id}`, {
+        method: isNew ? 'POST' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: taskForm.name,
+          city: taskForm.city,
+          industry: taskForm.industry,
+          limit: taskForm.limit || 5,
+          scoring: taskForm.scoring || null,
+          use_ai: taskForm.use_ai !== false,
+          use_geocode: taskForm.use_geocode !== false
+        })
+      })
+      if (res.ok) {
+        toast(isNew ? 'Задача поиска создана' : 'Задача обновлена', 'success')
+        setTaskForm(null)
+        loadTasks()
+      } else {
+        toast('Не удалось сохранить задачу', 'error')
+      }
+    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+  }
+
+  const handleDeleteTask = async (task: any) => {
+    if (!window.confirm(`Удалить задачу "${task.name}"?`)) return
+    await fetch(`${API_URL}/api/search-tasks/${task.id}`, { method: 'DELETE' })
+    toast('Задача удалена', 'success')
+    loadTasks()
   }
 
   const handleStatusChange = async (leadId: string, newStatus: string) => {
@@ -282,7 +337,7 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
           <button
-            onClick={() => setIsRunModalOpen(true)}
+            onClick={() => setActiveTab('search')}
             disabled={isPipelineRunning}
             style={{ 
               backgroundColor: isPipelineRunning ? '#64748B' : '#10B981', 
@@ -303,7 +358,8 @@ export default function App() {
 
       <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', borderBottom: '1px solid #334155', paddingBottom: '12px', overflowX: 'auto' }}>
         {[
-          { id: 'table', label: 'Таблица лидов', icon: Users },
+          { id: 'search', label: 'Поиск лидов', icon: Search },
+          { id: 'table', label: 'Работа с лидами', icon: Users },
           { id: 'map', label: 'Карта и сектора', icon: MapIcon },
           { id: 'managers', label: 'Менеджеры', icon: Briefcase },
           { id: 'analytics', label: 'Аналитика', icon: BarChart3 }
@@ -317,6 +373,128 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {activeTab === 'search' && (
+        <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h2 style={{ fontSize: '18px', fontWeight: 'bold' }}>Задачи поиска лидов</h2>
+              <p style={{ color: '#94A3B8', fontSize: '13px' }}>Задайте, что и где искать, параметры скоринга и обогащения — затем запускайте в один клик</p>
+            </div>
+            <button
+              onClick={() => setTaskForm({ name: '', city: 'Екатеринбург', industry: 'автозапчасти', limit: 5, scoring: null, use_ai: true, use_geocode: true })}
+              style={{ backgroundColor: '#10B981', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <Search size={16} /> Новая задача
+            </button>
+          </div>
+
+          {taskForm && (
+            <div style={{ backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+              <h3 style={{ fontSize: '15px', fontWeight: '600', marginBottom: '16px' }}>{taskForm.id ? 'Редактирование задачи' : 'Новая задача поиска'}</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Название задачи</label>
+                  <input value={taskForm.name} onChange={e => setTaskForm({ ...taskForm, name: e.target.value })} placeholder="Напр.: Опт Екб — крупные" style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Город</label>
+                  <input value={taskForm.city} onChange={e => setTaskForm({ ...taskForm, city: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Отрасль</label>
+                  <input value={taskForm.industry} onChange={e => setTaskForm({ ...taskForm, industry: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Сколько компаний (1–20)</label>
+                  <input type="number" min={1} max={20} value={taskForm.limit} onChange={e => setTaskForm({ ...taskForm, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px' }}>
+                  <input type="checkbox" checked={taskForm.scoring !== null} onChange={e => setTaskForm({ ...taskForm, scoring: e.target.checked ? { weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 } } : null })} />
+                  Индивидуальные веса скоринга (иначе — scoring_config.json)
+                </label>
+                {taskForm.scoring && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', padding: '12px', backgroundColor: '#1E293B', borderRadius: '8px' }}>
+                    {[
+                      ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Бренды'],
+                      ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент']
+                    ].map(([key, label]) => (
+                      <div key={key}>
+                        <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>{label}</label>
+                        <input type="number" min={0} max={100} value={taskForm.scoring.weights[key]}
+                          onChange={e => setTaskForm({ ...taskForm, scoring: { weights: { ...taskForm.scoring.weights, [key]: Math.max(0, parseInt(e.target.value) || 0) } } })}
+                          style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '6px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
+                  <input type="checkbox" checked={taskForm.use_ai !== false} onChange={e => setTaskForm({ ...taskForm, use_ai: e.target.checked })} />
+                  AI-обогащение (ЛПР, размер бизнеса через Gemini)
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
+                  <input type="checkbox" checked={taskForm.use_geocode !== false} onChange={e => setTaskForm({ ...taskForm, use_geocode: e.target.checked })} />
+                  Геокодинг адресов (Nominatim)
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button onClick={() => setTaskForm(null)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
+                <button onClick={handleSaveTask} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Сохранить задачу</button>
+              </div>
+            </div>
+          )}
+
+          {searchTasks.length === 0 ? (
+            <div style={{ padding: '40px', textAlign: 'center', color: '#64748B' }}>Задач поиска пока нет. Создайте первую — задайте, что и где искать.</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
+              {searchTasks.map(task => {
+                const statusStyle: any = {
+                  draft: { bg: '#334155', color: '#94A3B8', text: 'Черновик' },
+                  running: { bg: '#1E3A5F', color: '#93C5FD', text: 'Выполняется...' },
+                  done: { bg: '#14532D', color: '#86EFAC', text: 'Выполнена' },
+                  error: { bg: '#7F1D1D', color: '#FCA5A5', text: 'Ошибка' }
+                }
+                const st = statusStyle[task.status] || statusStyle.draft
+                return (
+                  <div key={task.id} style={{ backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', padding: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                      <div style={{ fontWeight: '600', fontSize: '15px' }}>{task.name}</div>
+                      <span style={{ backgroundColor: st.bg, color: st.color, padding: '3px 10px', borderRadius: '10px', fontSize: '11px', whiteSpace: 'nowrap' }}>{st.text}</span>
+                    </div>
+                    <div style={{ color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>{task.city} · {task.industry} · до {task.limit} компаний</div>
+                    <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '10px' }}>
+                      {task.scoring ? 'Индивидуальные веса скоринга' : 'Скоринг по scoring_config.json'}
+                      {task.use_ai === false ? ' · без AI' : ''}{task.use_geocode === false ? ' · без геокодинга' : ''}
+                    </div>
+                    {task.last_run && (
+                      <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '10px' }}>
+                        Последний запуск: {new Date(task.last_run).toLocaleString('ru-RU')} — найдено {task.leads_found ?? 0}, добавлено {task.leads_added ?? 0}
+                        {task.last_error ? <div style={{ color: '#FCA5A5' }}>{task.last_error}</div> : null}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button onClick={() => handleRunTask(task)} disabled={isPipelineRunning} style={{ backgroundColor: isPipelineRunning ? '#334155' : '#10B981', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: isPipelineRunning ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <Search size={13} /> Запустить
+                      </button>
+                      <button onClick={() => setActiveTab('table')} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: 'pointer', fontSize: '12px' }}>К лидам</button>
+                      <button onClick={() => setTaskForm({ ...task, scoring: task.scoring || null })} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: 'pointer', fontSize: '12px' }}>Изменить</button>
+                      <button onClick={() => handleDeleteTask(task)} style={{ backgroundColor: '#7F1D1D', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: 'pointer', fontSize: '12px' }}>Удалить</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {activeTab === 'table' && (
         <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
@@ -384,6 +562,9 @@ export default function App() {
                         <div style={{ color: '#64748B', fontSize: '13px' }}>{lead.domain}</div>
                         <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '4px' }}>{lead.city}</div>
                         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                          {lead.search_task_name && (
+                            <span style={{ backgroundColor: '#3B2F5B', color: '#C4B5FD', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }} title={`Задача поиска: ${lead.search_task_name}`}>🔍 {lead.search_task_name}</span>
+                          )}
                           {lead.business_size && lead.business_size !== 'unknown' && (
                             <span style={{ backgroundColor: '#1E3A5F', color: '#93C5FD', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
                               {{ small: 'Малый бизнес', medium: 'Средний бизнес', large: 'Крупный бизнес' }[lead.business_size]}
@@ -592,6 +773,7 @@ export default function App() {
                 <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Tier</div><div style={{ display: 'inline-block', backgroundColor: selectedLead.lead_tier === 'A' ? '#10B981' : selectedLead.lead_tier === 'B' ? '#F59E0B' : '#EF4444', padding: '4px 12px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>Tier {selectedLead.lead_tier}</div></div>
                 <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Размер бизнеса</div><div style={{ fontSize: '14px' }}>{{ small: 'Малый', medium: 'Средний', large: 'Крупный', unknown: 'Не определён' }[selectedLead.business_size || 'unknown']}{selectedLead.wholesale ? ' · опт' : ''}</div></div>
                 <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Статус</div><div style={{ fontSize: '14px' }}>{getStatusText(selectedLead.status)}</div></div>
+                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Источник</div><div style={{ fontSize: '14px' }}>{selectedLead.search_task_name || 'Ручной импорт'}</div></div>
               </div>
               {selectedLead.reason && (
                 <div style={{ marginTop: '12px', backgroundColor: '#0F172A', borderLeft: '3px solid #3B82F6', padding: '10px 12px', borderRadius: '0 6px 6px 0', fontSize: '13px', color: '#94A3B8' }}>
@@ -697,31 +879,6 @@ export default function App() {
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
               <button onClick={() => setIsSupplierModalOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
               <button onClick={handleSaveSupplier} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Сохранить</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isRunModalOpen && !isPipelineRunning && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setIsRunModalOpen(false)}>
-          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', width: '420px' }} onClick={e => e.stopPropagation()}>
-            <h2 style={{ marginBottom: '8px' }}>Запуск AI-поиска</h2>
-            <p style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '20px' }}>Поиск компаний, анализ сайтов и генерация КП займёт 1–3 минуты. Можно закрыть окно — поиск продолжится.</p>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Город</label>
-              <input value={runParams.city} onChange={e => setRunParams({ ...runParams, city: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
-            </div>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Отрасль</label>
-              <input value={runParams.industry} onChange={e => setRunParams({ ...runParams, industry: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
-            </div>
-            <div style={{ marginBottom: '24px' }}>
-              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Сколько компаний искать (1–20)</label>
-              <input type="number" min={1} max={20} value={runParams.limit} onChange={e => setRunParams({ ...runParams, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
-            </div>
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button onClick={() => setIsRunModalOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
-              <button onClick={handleRunPipeline} style={{ backgroundColor: '#10B981', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Запустить</button>
             </div>
           </div>
         </div>
