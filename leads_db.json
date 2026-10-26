@@ -23,8 +23,8 @@
       "Bosch",
       "TRW"
     ],
-    "lead_score": 100,
-    "lead_tier": "A",
+    "lead_score": 70,
+    "lead_tier": "B",
     "status": "in_progress",
     "pdf_file": null,
     "comments": [
@@ -61,8 +61,8 @@
       "ВАЗ",
       "ГАЗ"
     ],
-    "lead_score": 100,
-    "lead_tier": "A",
+    "lead_score": 70,
+    "lead_tier": "B",
     "status": "contacted",
     "pdf_file": null,
     "comments": [],
@@ -101,46 +101,14 @@
       "Nissan",
       "Denso"
     ],
-    "lead_score": 100,
-    "lead_tier": "A",
+    "lead_score": 70,
+    "lead_tier": "B",
     "status": "new",
     "comments": [],
     "status_history": [
       {
         "status": "new",
         "date": "2026-10-23 11:00"
-      }
-    ]
-  },
-  {
-    "company_name": "Оптом.ру - товары оптом, оптовые фирмы, оптовая продажа товаров, оптовики",
-    "domain": "www.optom.ru",
-    "city": "Екатеринбург",
-    "address": "",
-    "coordinates": {
-      "lat": 56.844518637908614,
-      "lng": 60.57289714939839
-    },
-    "lpr": [
-      {
-        "name": "Руководитель",
-        "position": "Директор"
-      }
-    ],
-    "lpr_emails": [],
-    "brands": [
-      "ГАЗ"
-    ],
-    "lead_score": 85,
-    "lead_tier": "A",
-    "id": "lead_1792947949834_0",
-    "status": "new",
-    "pdf_file": null,
-    "comments": [],
-    "status_history": [
-      {
-        "status": "new",
-        "date": "25.10.2026, 20:05:49"
       }
     ]
   },
@@ -163,7 +131,7 @@
     "brands": [
       "ГАЗ"
     ],
-    "lead_score": 65,
+    "lead_score": 58,
     "lead_tier": "B",
     "business_size": "small",
     "wholesale": true,
@@ -281,7 +249,7 @@
       "LADA",
       "ГАЗ"
     ],
-    "lead_score": 55,
+    "lead_score": 58,
     "lead_tier": "B",
     "business_size": "small",
     "wholesale": true,

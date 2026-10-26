@@ -66,7 +66,17 @@ export default function App() {
 
   const [toasts, setToasts] = useState<Toast[]>([])
   const [job, setJob] = useState<PipelineJob | null>(null)
-  const [copiedLetters, setCopiedLetters] = useState<Record<string, boolean>>({})
+  const [copiedLetters, setCopiedLetters] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    try { return JSON.parse(localStorage.getItem('copied_letters') || '{}') } catch { return {} }
+  })
+  const markLetterCopied = (id: string) => {
+    setCopiedLetters(c => {
+      const next = { ...c, [id]: true }
+      try { localStorage.setItem('copied_letters', JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
+  }
   const [searchTasks, setSearchTasks] = useState<any[]>([])
   const [taskForm, setTaskForm] = useState<any | null>(null)
 
@@ -120,7 +130,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
 
-  useEffect(() => { loadData(); loadTasks() }, [])
+  useEffect(() => { loadData(); loadTasks(); loadSupplierConfig() }, [])
 
   useEffect(() => {
     if (activeTab === 'map' && mapRef.current) {
@@ -152,6 +162,19 @@ export default function App() {
       const res = await apiFetch(`${API_URL}/api/search-tasks`)
       if (res.ok) setSearchTasks(await res.json())
     } catch (e) { console.error('Error loading tasks:', e) }
+  }
+
+  // Настройки поставщика: сервер — источник истины, localStorage — кэш
+  const loadSupplierConfig = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/supplier-config`)
+      if (!res.ok) return
+      const cfg = await res.json()
+      if (cfg?.name) {
+        setSupplier(cfg)
+        try { localStorage.setItem('supplier_config', JSON.stringify(cfg)) } catch { /* ignore */ }
+      }
+    } catch (e) { console.error('Error loading supplier config:', e) }
   }
 
   const stopPolling = () => {
@@ -267,13 +290,21 @@ export default function App() {
     if (selectedLead?.id === leadId) setSelectedLead({ ...lead, status: newStatus } as Lead)
   }
 
-  const handleSaveSupplier = () => {
+  const handleSaveSupplier = async () => {
     setSupplier(tempSupplier)
     if (typeof window !== 'undefined') {
       localStorage.setItem('supplier_config', JSON.stringify(tempSupplier))
     }
     setIsSupplierModalOpen(false)
-    toast('Данные поставщика обновлены', 'success')
+    try {
+      await apiFetch(`${API_URL}/api/supplier-config`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: tempSupplier.name, contact: tempSupplier.contact })
+      })
+      toast('Данные поставщика обновлены', 'success')
+    } catch (e) {
+      toast('Сохранено локально, но сервер недоступен', 'error')
+    }
   }
 
   const handleCopyEmail = (email: string) => {
@@ -302,14 +333,14 @@ export default function App() {
   const handleCopyLetter = (lead: Lead) => {
     const { subject, body } = buildLetter(lead)
     navigator.clipboard.writeText(`Тема: ${subject}\n\n${body}`)
-    setCopiedLetters(c => ({ ...c, [lead.id]: true }))
+    markLetterCopied(lead.id)
     toast('Текст письма скопирован. Вставьте в почту и прикрепите КП', 'success')
   }
 
   const handleMailto = (lead: Lead) => {
     const { subject, body } = buildLetter(lead)
     window.location.href = `mailto:${lead.lpr_emails[0] || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
-    setCopiedLetters(c => ({ ...c, [lead.id]: true }))
+    markLetterCopied(lead.id)
   }
 
   const handleDownloadPDF = async (lead: Lead) => {
@@ -325,6 +356,37 @@ export default function App() {
     } catch (e) { toast('Ошибка скачивания КП', 'error') }
   }
 
+  const handleExportCSV = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/export`)
+      if (!res.ok) { toast('Не удалось выгрузить CSV', 'error'); return }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `leads_${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast(`Выгружено ${leads.length} лидов в CSV`, 'success')
+    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+  }
+
+  const handleDeleteLead = async (lead: Lead) => {
+    if (!window.confirm(`Удалить лид «${lead.company_name}»? Действие необратимо.`)) return
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/${lead.id}`, { method: 'DELETE' })
+      if (res.ok) {
+        toast('Лид удалён', 'success')
+        setSelectedLead(null)
+        loadData()
+      } else {
+        toast('Не удалось удалить лид', 'error')
+      }
+    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+  }
+
   const handleAddComment = async () => {
     if (!newComment.trim() || !selectedLead) return
     await apiFetch(`${API_URL}/api/leads/${selectedLead.id}`, {
@@ -338,10 +400,20 @@ export default function App() {
     setSelectedLead(updated)
   }
 
-  const filteredLeads = leads.filter(l =>
-    (statusFilter === 'all' || l.status === statusFilter) &&
-    (searchQuery === '' || l.company_name.toLowerCase().includes(searchQuery.toLowerCase()))
-  )
+  const filteredLeads = leads.filter(l => {
+    if (statusFilter !== 'all' && l.status !== statusFilter) return false
+    if (!searchQuery.trim()) return true
+    const q = searchQuery.toLowerCase()
+    return (
+      l.company_name.toLowerCase().includes(q) ||
+      l.domain.toLowerCase().includes(q) ||
+      (l.city || '').toLowerCase().includes(q) ||
+      (l.address || '').toLowerCase().includes(q) ||
+      (l.lpr || []).some(p => `${p.name} ${p.position}`.toLowerCase().includes(q)) ||
+      (l.lpr_emails || []).some(e => e.toLowerCase().includes(q)) ||
+      (l.brands || []).some(b => b.toLowerCase().includes(q))
+    )
+  })
 
   if (loading) return <div style={{ color: 'white', padding: 40, textAlign: 'center' }}>Загрузка системы...</div>
 
@@ -566,7 +638,12 @@ export default function App() {
                 </select>
               </div>
             </div>
-            <div style={{ fontSize: '13px', color: '#94A3B8', marginTop: '12px' }}>Найдено: {filteredLeads.length} из {leads.length} лидов</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ fontSize: '13px', color: '#94A3B8' }}>Найдено: {filteredLeads.length} из {leads.length} лидов</div>
+              <button onClick={handleExportCSV} style={{ backgroundColor: '#334155', border: '1px solid #475569', borderRadius: '6px', padding: '6px 14px', color: 'white', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Download size={13} /> Экспорт CSV
+              </button>
+            </div>
           </div>
 
           <div style={{ overflowX: 'auto' }}>
@@ -885,6 +962,7 @@ export default function App() {
               <button onClick={() => handleCopyLetter(selectedLead)} style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}><Copy size={14} /> Скопировать письмо</button>
               <button onClick={() => handleMailto(selectedLead)} disabled={!selectedLead.lpr_emails[0]} style={{ backgroundColor: selectedLead.lpr_emails[0] ? '#3B82F6' : '#64748B', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}><Send size={14} /> В почту</button>
               <button onClick={() => handleDownloadPDF(selectedLead)} style={{ backgroundColor: selectedLead.pdf_file ? '#10B981' : '#64748B', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Скачать КП</button>
+              <button onClick={() => handleDeleteLead(selectedLead)} style={{ backgroundColor: '#7F1D1D', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Удалить</button>
               <button onClick={() => setSelectedLead(null)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '10px 20px', color: '#F8FAFC', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Закрыть</button>
             </div>
           </div>

@@ -363,6 +363,25 @@ function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {
   return 'C'
 }
 
+// Пересчёт скоринга существующих лидов текущей моделью (для старых записей
+// с устаревшим скором и для смены scoring_config)
+export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null): any {
+  const cfg = loadScoringConfig(overrides)
+  const size = ['small', 'medium', 'large'].includes(lead.business_size) ? lead.business_size : 'unknown'
+  const score = calculateLeadScore(cfg, {
+    lprCount: Array.isArray(lead.lpr) ? lead.lpr.length : 0,
+    emailsCount: Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
+    brandsCount: Array.isArray(lead.brands) ? lead.brands.length : 0,
+    businessSize: size,
+    wholesale: Boolean(lead.wholesale),
+    contentLength: 0 // у старых лидов нет исходного текста сайта — не учитываем
+  })
+  // Контент не сохраняем у лидов, поэтому чтобы не занижать всех старых записей,
+  // даём половину веса контента по умолчанию
+  const withContentFallback = Math.min(100, score + Math.round(cfg.weights.content / 2))
+  return { ...lead, lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
+}
+
 // --- Этап 1: Поиск компаний через Tavily ---
 export async function searchCompanies(city: string, industry: string, limit: number = 10) {
   console.log(`🔍 Поиск компаний: ${city}, ${industry}`)

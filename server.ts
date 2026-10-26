@@ -160,6 +160,68 @@ app.get('/api/managers', (req, res) => {
   res.json(readJSON('managers.json'))
 })
 
+// --- Настройки поставщика (единый источник для UI и пайплайна) ---
+app.get('/api/supplier-config', (req, res) => {
+  const cfg = readJSON('supplier_config.json')
+  res.json(cfg?.name ? cfg : { name: 'УралАвтоОпт', contact: 'Петров И.С.' })
+})
+
+app.put('/api/supplier-config', (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const contact = String(req.body?.contact || '').trim()
+  if (!name) return res.status(400).json({ error: 'Название поставщика обязательно' })
+  const cfg = { name, contact }
+  writeJSON('supplier_config.json', cfg)
+  res.json(cfg)
+})
+
+// --- Экспорт лидов в CSV (Excel-совместимый, с BOM) ---
+app.get('/api/leads/export', (req, res) => {
+  const leads = readJSON('leads_db.json')
+  const esc = (v: any) => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const statusText: Record<string, string> = {
+    new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
+    not_target: 'Не целевой', blacklisted: 'Черный список', converted: 'Клиент'
+  }
+  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Email', 'Бренды', 'Размер', 'Опт', 'Источник', 'Комментарии']
+  const rows = leads.map((l: any) => [
+    l.company_name, l.domain, l.city, l.address || '',
+    l.lead_score, l.lead_tier, statusText[l.status] || l.status,
+    (l.lpr || []).map((p: any) => p.name).join('; '),
+    (l.lpr || []).map((p: any) => p.position).join('; '),
+    (l.lpr_emails || []).join('; '),
+    (l.brands || []).join('; '),
+    l.business_size || '', l.wholesale ? 'да' : 'нет',
+    l.search_task_name || 'Ручной импорт',
+    (l.comments || []).join(' | ')
+  ])
+  const csv = '﻿' + [header, ...rows].map(r => r.map(esc).join(';')).join('\r\n')
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="leads_${new Date().toISOString().slice(0, 10)}.csv"`)
+  res.send(csv)
+})
+
+// Удалить лид
+app.delete('/api/leads/:id', (req, res) => {
+  const leads = readJSON('leads_db.json')
+  const idx = leads.findIndex((l: any) => l.id === req.params.id)
+  if (idx === -1) return res.status(404).json({ error: 'Лид не найден' })
+  const removed = leads.splice(idx, 1)[0]
+  // Удаляем файл КП, если он есть и не используется другими лидами
+  if (removed.pdf_file) {
+    const stillUsed = leads.some((l: any) => l.pdf_file === removed.pdf_file)
+    const filePath = kpFilePath(String(removed.pdf_file))
+    if (!stillUsed && filePath && fs.existsSync(filePath)) {
+      try { fs.unlinkSync(filePath) } catch { /* не критично */ }
+    }
+  }
+  writeJSON('leads_db.json', leads)
+  res.json({ success: true })
+})
+
 // Аналитика
 app.get('/api/analytics', (req, res) => {
   const leads = readJSON('leads_db.json')
@@ -259,13 +321,14 @@ function launchPipelineJob(params: {
         return
       }
 
-      // Добавление новых лидов в базу (проверка на дубликаты по домену)
+      // Добавление новых лидов в базу (проверка на дубликаты по домену, без учёта www.)
+      const rootDomain = (d: string) => String(d || '').toLowerCase().replace(/^www\./, '')
       const existingLeads = readJSON('leads_db.json')
-      const existingDomains = new Set(existingLeads.map((l: any) => l.domain))
+      const existingDomains = new Set(existingLeads.map((l: any) => rootDomain(l.domain)))
 
       let addedCount = 0
       for (const lead of newLeads) {
-        if (!existingDomains.has(lead.domain)) {
+        if (!existingDomains.has(rootDomain(lead.domain))) {
           const newLead = {
             ...lead,
             ...source,
@@ -278,6 +341,7 @@ function launchPipelineJob(params: {
             assigned_manager_id: undefined
           }
           existingLeads.push(newLead)
+          existingDomains.add(rootDomain(lead.domain)) // защита от дублей внутри одного прогона
           addedCount++
         }
       }
@@ -350,7 +414,49 @@ app.get('/api/search-tasks', (req, res) => {
   res.json(getTasks())
 })
 
+// Валидация параметров задачи поиска. Возвращает ошибку или санитизированное тело.
+const validateTaskBody = (body: any): { error?: string; value?: any } => {
+  const clean: any = {}
+  const name = String(body?.name ?? '').trim()
+  const city = String(body?.city ?? '').trim()
+  const industry = String(body?.industry ?? '').trim()
+  if (name.length < 2 || name.length > 80) return { error: 'Название задачи: 2–80 символов' }
+  for (const [label, val] of [['Город', city], ['Отрасль', industry]]) {
+    if (val.length < 2 || val.length > 60) return { error: `${label}: 2–60 символов` }
+    if ([...val].some(c => c.codePointAt(0) === 0xfffd)) return { error: `${label}: некорректная кодировка (введите текст заново)` }
+    if (!/[a-zA-Zа-яА-ЯёЁ]/.test(val)) return { error: `${label}: должны быть буквы` }
+  }
+  clean.name = name
+  clean.city = city
+  clean.industry = industry
+
+  const limit = parseInt(body?.limit)
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20) return { error: 'Лимит: число от 1 до 20' }
+  clean.limit = limit
+
+  clean.use_ai = body?.use_ai !== false
+  clean.use_geocode = body?.use_geocode !== false
+
+  if (body?.scoring) {
+    const w = body.scoring.weights || {}
+    const weights: any = {}
+    for (const k of ['lpr', 'emails', 'brands', 'businessSize', 'wholesale', 'content']) {
+      if (w[k] !== undefined) {
+        const n = parseInt(w[k])
+        if (!Number.isInteger(n) || n < 0 || n > 100) return { error: `Вес скоринга "${k}": число 0–100` }
+        weights[k] = n
+      }
+    }
+    clean.scoring = { weights }
+  } else {
+    clean.scoring = null
+  }
+  return { value: clean }
+}
+
 app.post('/api/search-tasks', (req, res) => {
+  const { error, value } = validateTaskBody(req.body)
+  if (error) return res.status(400).json({ error })
   const tasks = getTasks()
   const t: SearchTask = {
     id: `task_${Date.now()}`,
@@ -359,7 +465,7 @@ app.post('/api/search-tasks', (req, res) => {
     leads_found: 0,
     leads_added: 0,
     created_at: new Date().toISOString(),
-    ...req.body
+    ...value
   }
   tasks.push(t)
   saveTasks(tasks)
@@ -367,10 +473,12 @@ app.post('/api/search-tasks', (req, res) => {
 })
 
 app.put('/api/search-tasks/:id', (req, res) => {
+  const { error, value } = validateTaskBody(req.body)
+  if (error) return res.status(400).json({ error })
   const tasks = getTasks()
   const idx = tasks.findIndex((t: any) => t.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'Задача не найдена' })
-  tasks[idx] = { ...tasks[idx], ...req.body, id: req.params.id }
+  tasks[idx] = { ...tasks[idx], ...value, id: req.params.id }
   saveTasks(tasks)
   res.json(tasks[idx])
 })
