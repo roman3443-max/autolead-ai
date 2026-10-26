@@ -8,8 +8,55 @@ const app = express()
 const PORT = process.env.PORT || 3001
 const rootDir = process.cwd()
 
-app.use(cors())
-app.use(express.json())
+// --- Безопасность ---
+// Если задан API_TOKEN, все /api-запросы требуют заголовок x-api-token
+const API_TOKEN = process.env.API_TOKEN || ''
+// Разрешённые источники (CORS). Переопределяется переменной ALLOWED_ORIGINS через запятую
+const DEFAULT_ORIGINS = [
+  'https://autolead-ai-rosy.vercel.app',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:3001'
+]
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || DEFAULT_ORIGINS.join(',')).split(',').map(s => s.trim()).filter(Boolean)
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Запросы без Origin (curl, серверные скрипты) пропускаем
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
+    callback(new Error('Not allowed by CORS'))
+  },
+  allowedHeaders: ['Content-Type', 'x-api-token']
+}))
+app.use(express.json({ limit: '1mb' }))
+
+// Заголовки безопасности
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  next()
+})
+
+// Проверка токена (только если он задан в окружении)
+app.use('/api', (req, res, next) => {
+  if (!API_TOKEN) return next()
+  if (req.headers['x-api-token'] === API_TOKEN) return next()
+  res.status(401).json({ error: 'Требуется ключ доступа (x-api-token)' })
+})
+
+// Rate limit на запуск пайплайна: минимальный интервал между запусками
+const RUN_COOLDOWN_MS = (parseInt(process.env.RUN_COOLDOWN_SECONDS || '') || 120) * 1000
+let lastRunAt = 0
+const runCooldown = (req: any, res: any, next: any) => {
+  const wait = RUN_COOLDOWN_MS - (Date.now() - lastRunAt)
+  if (wait > 0) {
+    return res.status(429).json({ error: `Слишком частые запуски. Подождите ${Math.ceil(wait / 1000)} сек.` })
+  }
+  lastRunAt = Date.now()
+  next()
+}
+
 app.use('/kp_final', express.static(path.join(rootDir, 'kp_final')))
 
 const readJSON = (file: string) => {
@@ -20,6 +67,16 @@ const readJSON = (file: string) => {
 
 const writeJSON = (file: string, data: any) => {
   fs.writeFileSync(path.join(rootDir, file), JSON.stringify(data, null, 2))
+}
+
+// Безопасное имя файла внутри kp_final (защита от path traversal)
+const kpFilePath = (fileName: string): string | null => {
+  if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
+  if (fileName !== path.basename(fileName)) return null // запрещаем ../ и разделители
+  const resolved = path.resolve(rootDir, 'kp_final', fileName)
+  const kpDir = path.resolve(rootDir, 'kp_final') + path.sep
+  if (!resolved.startsWith(kpDir)) return null
+  return resolved
 }
 
 // Получить все лиды
@@ -33,7 +90,19 @@ app.put('/api/leads/:id', (req, res) => {
   const idx = leads.findIndex((l: any) => l.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'Лид не найден' })
 
-  leads[idx] = { ...leads[idx], ...req.body }
+  const body = { ...req.body }
+  // pdf_file: только null или безопасное имя файла (иначе path traversal)
+  if (body.pdf_file !== undefined) {
+    if (body.pdf_file === null || body.pdf_file === '') {
+      body.pdf_file = null
+    } else if (!kpFilePath(String(body.pdf_file))) {
+      return res.status(400).json({ error: 'Некорректное имя файла КП' })
+    }
+  }
+  // id менять нельзя
+  delete body.id
+
+  leads[idx] = { ...leads[idx], ...body }
   writeJSON('leads_db.json', leads)
   res.json(leads[idx])
 })
@@ -44,11 +113,11 @@ app.get('/api/leads/:id/pdf', (req, res) => {
   const lead = leads.find((l: any) => l.id === req.params.id)
   if (!lead?.pdf_file) return res.status(404).json({ error: 'КП не найдено' })
 
-  const filePath = path.join(rootDir, 'kp_final', lead.pdf_file)
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не существует' })
+  const filePath = kpFilePath(String(lead.pdf_file))
+  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не существует' })
 
   res.setHeader('Content-Type', 'text/html')
-  res.setHeader('Content-Disposition', `inline; filename="${lead.pdf_file}"`)
+  res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(lead.pdf_file))}"`)
   fs.createReadStream(filePath).pipe(res)
 })
 
@@ -238,7 +307,7 @@ function launchPipelineJob(params: {
 }
 
 // Быстрый разовый запуск (без сохранённой задачи)
-app.post('/api/run-pipeline', (req, res) => {
+app.post('/api/run-pipeline', runCooldown, (req, res) => {
   const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
   const launched = launchPipelineJob({ city, industry, limit })
   if (!launched) {
@@ -312,7 +381,7 @@ app.delete('/api/search-tasks/:id', (req, res) => {
   res.json({ success: true })
 })
 
-app.post('/api/search-tasks/:id/run', (req, res) => {
+app.post('/api/search-tasks/:id/run', runCooldown, (req, res) => {
   const tasks = getTasks()
   const task = tasks.find((t: any) => t.id === req.params.id)
   if (!task) return res.status(404).json({ error: 'Задача не найдена' })

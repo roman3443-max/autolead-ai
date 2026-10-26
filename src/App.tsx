@@ -76,6 +76,33 @@ export default function App() {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000)
   }
 
+  // --- Доступ к API по ключу (если на сервере задан API_TOKEN) ---
+  const [authRequired, setAuthRequired] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
+
+  const apiFetch = async (url: string, options: RequestInit = {}) => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('api_token') || '' : ''
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { 'x-api-token': token } : {}),
+        ...(options.headers || {})
+      }
+    })
+    if (res.status === 401) setAuthRequired(true)
+    return res
+  }
+
+  const handleSaveToken = () => {
+    if (!tokenInput.trim()) return
+    localStorage.setItem('api_token', tokenInput.trim())
+    setAuthRequired(false)
+    setTokenInput('')
+    loadData()
+    loadTasks()
+  }
+
   const [supplier, setSupplier] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('supplier_config')
@@ -104,10 +131,10 @@ export default function App() {
   const loadData = async () => {
     try {
       const [lRes, mRes, sRes, aRes] = await Promise.all([
-        fetch(`${API_URL}/api/leads`),
-        fetch(`${API_URL}/api/managers`),
-        fetch(`${API_URL}/api/sectors`),
-        fetch(`${API_URL}/api/analytics`)
+        apiFetch(`${API_URL}/api/leads`),
+        apiFetch(`${API_URL}/api/managers`),
+        apiFetch(`${API_URL}/api/sectors`),
+        apiFetch(`${API_URL}/api/analytics`)
       ])
       setLeads(await lRes.json())
       setManagers(await mRes.json())
@@ -122,7 +149,7 @@ export default function App() {
 
   const loadTasks = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/search-tasks`)
+      const res = await apiFetch(`${API_URL}/api/search-tasks`)
       if (res.ok) setSearchTasks(await res.json())
     } catch (e) { console.error('Error loading tasks:', e) }
   }
@@ -135,7 +162,7 @@ export default function App() {
     stopPolling()
     pollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`${API_URL}/api/pipeline-status/${jobId}`)
+        const res = await apiFetch(`${API_URL}/api/pipeline-status/${jobId}`)
         if (!res.ok) return
         const data: PipelineJob = await res.json()
         setJob(data)
@@ -180,7 +207,7 @@ export default function App() {
     setIsPipelineRunning(true)
     setJob(null)
     try {
-      const res = await fetch(`${API_URL}/api/search-tasks/${task.id}/run`, { method: 'POST' })
+      const res = await apiFetch(`${API_URL}/api/search-tasks/${task.id}/run`, { method: 'POST' })
       await startJobPolling(res)
     } catch (e) {
       toast('Ошибка соединения с сервером', 'error')
@@ -221,14 +248,14 @@ export default function App() {
 
   const handleDeleteTask = async (task: any) => {
     if (!window.confirm(`Удалить задачу "${task.name}"?`)) return
-    await fetch(`${API_URL}/api/search-tasks/${task.id}`, { method: 'DELETE' })
+    await apiFetch(`${API_URL}/api/search-tasks/${task.id}`, { method: 'DELETE' })
     toast('Задача удалена', 'success')
     loadTasks()
   }
 
   const handleStatusChange = async (leadId: string, newStatus: string) => {
     const lead = leads.find(l => l.id === leadId)
-    await fetch(`${API_URL}/api/leads/${leadId}`, {
+    await apiFetch(`${API_URL}/api/leads/${leadId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -288,7 +315,7 @@ export default function App() {
   const handleDownloadPDF = async (lead: Lead) => {
     if (!lead.pdf_file) { toast('КП ещё не сгенерировано', 'error'); return }
     try {
-      const res = await fetch(`${API_URL}/api/leads/${lead.id}/pdf`)
+      const res = await apiFetch(`${API_URL}/api/leads/${lead.id}/pdf`)
       if (res.ok) {
         const blob = await res.blob()
         window.open(URL.createObjectURL(blob), '_blank')
@@ -300,7 +327,7 @@ export default function App() {
 
   const handleAddComment = async () => {
     if (!newComment.trim() || !selectedLead) return
-    await fetch(`${API_URL}/api/leads/${selectedLead.id}`, {
+    await apiFetch(`${API_URL}/api/leads/${selectedLead.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ comments: [...(selectedLead.comments || []), newComment] })
@@ -891,6 +918,26 @@ export default function App() {
             <div style={{ height: '100%', width: `${Math.min(100, (job.processed / Math.max(job.total, 1)) * 100)}%`, backgroundColor: '#3B82F6', transition: 'width 0.5s' }} />
           </div>
           <div style={{ fontSize: '12px', color: '#64748B', marginTop: '6px' }}>{job.processed} / {job.total}</div>
+        </div>
+      )}
+
+      {authRequired && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
+          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', width: '400px' }}>
+            <h2 style={{ marginBottom: '8px' }}>Требуется ключ доступа</h2>
+            <p style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '20px' }}>Сервер защищён ключом API. Введите его — он сохранится в этом браузере.</p>
+            <input
+              type="password"
+              value={tokenInput}
+              onChange={e => setTokenInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleSaveToken() }}
+              placeholder="Ключ доступа"
+              style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '10px', color: 'white', outline: 'none', marginBottom: '16px', fontSize: '14px' }}
+            />
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button onClick={handleSaveToken} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Войти</button>
+            </div>
+          </div>
         </div>
       )}
 
