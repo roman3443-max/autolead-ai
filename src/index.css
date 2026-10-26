@@ -1,2 +1,93 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { color-scheme: dark; }
+  body {
+    @apply bg-ink-900 text-slate-200 antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+  ::selection { background: rgba(99, 102, 241, 0.35); }
+  * { scrollbar-width: thin; scrollbar-color: #232D42 transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #232D42; border-radius: 8px; }
+  *::-webkit-scrollbar-thumb:hover { background: #2f3b55; }
+  *::-webkit-scrollbar-track { background: transparent; }
+}
+
+@layer components {
+  .card {
+    @apply bg-ink-850 border border-line rounded-2xl shadow-card;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold text-sm
+      transition-all duration-150 select-none whitespace-nowrap
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60
+      disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none
+      active:scale-[0.98];
+  }
+  .btn-primary {
+    @apply btn text-white bg-gradient-to-r from-indigo-500 to-violet-500
+      hover:from-indigo-400 hover:to-violet-400 shadow-glow;
+  }
+  .btn-ghost {
+    @apply btn text-slate-300 bg-ink-750 border border-line hover:bg-ink-700 hover:text-white;
+  }
+  .btn-danger {
+    @apply btn text-white bg-rose-600/90 hover:bg-rose-500;
+  }
+  .btn-success {
+    @apply btn text-white bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400;
+  }
+  .input {
+    @apply w-full bg-ink-800 border border-line rounded-xl px-3.5 py-2.5 text-sm text-slate-100
+      placeholder:text-slate-500 outline-none transition-colors
+      focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20;
+  }
+  .label {
+    @apply block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-semibold;
+  }
+  .skeleton {
+    @apply relative overflow-hidden bg-ink-750 rounded-lg;
+  }
+  .skeleton::after {
+    content: '';
+    @apply absolute inset-0 -translate-x-full animate-[shimmer_1.6s_infinite];
+    background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.08), transparent);
+  }
+  .th {
+    @apply text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500;
+  }
+  .td {
+    @apply px-4 py-4 align-top;
+  }
+  .icon-btn {
+    @apply inline-flex items-center justify-center rounded-lg p-2 text-slate-400
+      transition-colors hover:text-white hover:bg-ink-700 outline-none
+      focus-visible:ring-2 focus-visible:ring-indigo-500/60;
+  }
+}
+
+/* Таблица: hover-строки */
+.row-hover {
+  @apply transition-colors hover:bg-ink-800/70;
+}
+
+/* Кастомный чекбокс — оставляем нативный, но красим */
+input[type='checkbox'] {
+  @apply w-4 h-4 rounded accent-indigo-500 cursor-pointer;
+}
+
+/* Липкая шапка таблицы */
+.sticky-head th {
+  position: sticky;
+  top: 0;
+  background: #10151F;
+  z-index: 5;
+}

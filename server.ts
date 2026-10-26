@@ -16,6 +16,8 @@ const DEFAULT_ORIGINS = [
   'https://autolead-ai-rosy.vercel.app',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
   'http://localhost:3001'
 ]
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || DEFAULT_ORIGINS.join(',')).split(',').map(s => s.trim()).filter(Boolean)

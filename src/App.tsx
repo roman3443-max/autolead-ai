@@ -1,9 +1,23 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import 'leaflet/dist/leaflet.css'
-import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { Users, Map as MapIcon, BarChart3, Briefcase, Download, X, Search, Mail, Copy, Send } from 'lucide-react'
 import L from 'leaflet'
+import {
+  Copy, Send, FileDown, Trash2, Mail, KeyRound, Briefcase, CheckCircle2, Circle,
+  Settings2, RefreshCw, Plus,
+} from 'lucide-react'
+
+import { API_URL, createApiFetch } from './lib/api'
+import { Lead, SearchTask, PipelineJob, Toast, STATUS_META, TIER_META, SIZE_LABELS, SCORING_FIELDS } from './lib/types'
+import Sidebar, { TabId } from './components/Sidebar'
+import Drawer, { CenterModal } from './components/Drawer'
+import ToastStack from './components/ToastStack'
+import ProgressWidget from './components/ProgressWidget'
+import { ReadinessChecklist } from './pages/SearchPage'
+import LeadsPage from './pages/LeadsPage'
+import SearchPage from './pages/SearchPage'
+import MapPage from './pages/MapPage'
+import ManagersPage from './pages/ManagersPage'
+import AnalyticsPage from './pages/AnalyticsPage'
 
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
@@ -12,136 +26,58 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 })
 
-const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001'
-
-interface Lead {
-  id: string
-  company_name: string
-  domain: string
-  city: string
-  address?: string
-  coordinates?: { lat: number; lng: number }
-  lpr: { name: string; position: string }[]
-  lpr_emails: string[]
-  brands: string[]
-  lead_score: number
-  lead_tier: 'A' | 'B' | 'C'
-  business_size?: 'small' | 'medium' | 'large' | 'unknown'
-  wholesale?: boolean
-  reason?: string
-  status: string
-  pdf_file?: string | null
-  comments?: string[]
-  status_history?: any[]
-  sector_id?: string
-  assigned_manager_id?: string
-  search_task_id?: string
-  search_task_name?: string
-}
-
-interface Toast { id: number; text: string; type: 'success' | 'error' | 'info' }
-
-interface PipelineJob {
-  id: string
-  status: string
-  stage: string
-  processed: number
-  total: number
-  added: number
-  totalFound: number
-  message: string
-  error?: string
-}
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'search' | 'table' | 'map' | 'managers' | 'analytics'>('table')
+  // ---------- данные ----------
+  const [activeTab, setActiveTab] = useState<TabId>('table')
   const [leads, setLeads] = useState<Lead[]>([])
   const [managers, setManagers] = useState<any[]>([])
   const [sectors, setSectors] = useState<any[]>([])
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [isPipelineRunning, setIsPipelineRunning] = useState(false)
-  const mapRef = useRef<L.Map | null>(null)
+  const [job, setJob] = useState<PipelineJob | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [toasts, setToasts] = useState<Toast[]>([])
-  const [job, setJob] = useState<PipelineJob | null>(null)
+  const [searchTasks, setSearchTasks] = useState<SearchTask[]>([])
+  const [taskForm, setTaskForm] = useState<any | null>(null)
+  const [scoringCfg, setScoringCfg] = useState<any>(null)
+  const [settingsDraft, setSettingsDraft] = useState<any>(null)
   const [copiedLetters, setCopiedLetters] = useState<Record<string, boolean>>(() => {
     if (typeof window === 'undefined') return {}
     try { return JSON.parse(localStorage.getItem('copied_letters') || '{}') } catch { return {} }
   })
-  const markLetterCopied = (id: string) => {
-    setCopiedLetters(c => {
-      const next = { ...c, [id]: true }
-      try { localStorage.setItem('copied_letters', JSON.stringify(next)) } catch { /* ignore */ }
-      return next
-    })
-  }
-  const [searchTasks, setSearchTasks] = useState<any[]>([])
-  const [taskForm, setTaskForm] = useState<any | null>(null)
-  const [scoringCfg, setScoringCfg] = useState<any>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsDraft, setSettingsDraft] = useState<any>(null)
 
-  const toast = (text: string, type: Toast['type'] = 'info') => {
-    const id = Date.now() + Math.random()
-    setToasts(t => [...t, { id, text, type }])
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000)
-  }
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
+  const [newComment, setNewComment] = useState('')
 
-  // --- Доступ к API по ключу (если на сервере задан API_TOKEN) ---
-  const [authRequired, setAuthRequired] = useState(false)
-  const [tokenInput, setTokenInput] = useState('')
-
-  const apiFetch = async (url: string, options: RequestInit = {}) => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('api_token') || '' : ''
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { 'x-api-token': token } : {}),
-        ...(options.headers || {})
-      }
-    })
-    if (res.status === 401) setAuthRequired(true)
-    return res
-  }
-
-  const handleSaveToken = () => {
-    if (!tokenInput.trim()) return
-    localStorage.setItem('api_token', tokenInput.trim())
-    setAuthRequired(false)
-    setTokenInput('')
-    loadData()
-    loadTasks()
-  }
-
-  const [supplier, setSupplier] = useState(() => {
+  const [supplier, setSupplier] = useState<any>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('supplier_config')
-      if (saved) {
-        try { return JSON.parse(saved) } catch (e) { console.error(e) }
-      }
+      if (saved) { try { return JSON.parse(saved) } catch { /* ignore */ } }
     }
     return { name: 'УралАвтоОпт', contact: 'Петров И.С.' }
   })
+  const [supplierDraft, setSupplierDraft] = useState<any>(supplier)
+  const [supplierOpen, setSupplierOpen] = useState(false)
 
-  const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false)
-  const [tempSupplier, setTempSupplier] = useState(supplier)
-  const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
-  const [newComment, setNewComment] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [authRequired, setAuthRequired] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
 
-  useEffect(() => { loadData(); loadTasks(); loadSupplierConfig(); loadScoringConfig() }, [])
+  const apiFetch = useMemo(() => createApiFetch(() => setAuthRequired(true)), [])
 
-  useEffect(() => {
-    if (activeTab === 'map' && mapRef.current) {
-      setTimeout(() => { mapRef.current?.invalidateSize() }, 100)
-    }
-  }, [activeTab])
+  // ---------- toast ----------
+  const dismissToast = useCallback((id: number) => setToasts(t => t.filter(x => x.id !== id)), [])
+  const toast = useCallback((text: string, type: Toast['type'] = 'info') => {
+    const id = Date.now() + Math.random()
+    setToasts(t => [...t, { id, text, type }])
+    setTimeout(() => dismissToast(id), 5000)
+  }, [dismissToast])
 
-  const loadData = async () => {
+  // ---------- загрузка ----------
+  const loadData = useCallback(async () => {
     try {
       const [lRes, mRes, sRes, aRes] = await Promise.all([
         apiFetch(`${API_URL}/api/leads`),
@@ -149,45 +85,127 @@ export default function App() {
         apiFetch(`${API_URL}/api/sectors`),
         apiFetch(`${API_URL}/api/analytics`)
       ])
-      setLeads(await lRes.json())
-      setManagers(await mRes.json())
-      setSectors(await sRes.json())
-      setAnalytics(await aRes.json())
+      if (lRes.ok) setLeads(await lRes.json())
+      if (mRes.ok) setManagers(await mRes.json())
+      if (sRes.ok) setSectors(await sRes.json())
+      if (aRes.ok) setAnalytics(await aRes.json())
       setLoading(false)
-    } catch (e) {
-      console.error('Error loading data:', e)
-      setLoading(false)
-    }
-  }
+    } catch (e) { console.error('Error loading data:', e); setLoading(false) }
+  }, [apiFetch])
 
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/search-tasks`)
       if (res.ok) setSearchTasks(await res.json())
     } catch (e) { console.error('Error loading tasks:', e) }
-  }
+  }, [apiFetch])
 
-  // Настройки поставщика: сервер — источник истины, localStorage — кэш
-  const loadSupplierConfig = async () => {
+  const loadSupplierConfig = useCallback(async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/supplier-config`)
       if (!res.ok) return
       const cfg = await res.json()
       if (cfg?.name) {
         setSupplier(cfg)
+        setSupplierDraft(cfg)
         try { localStorage.setItem('supplier_config', JSON.stringify(cfg)) } catch { /* ignore */ }
       }
     } catch (e) { console.error('Error loading supplier config:', e) }
-  }
+  }, [apiFetch])
 
-  // Глобальная конфигурация скоринга и дефолты поиска
-  const loadScoringConfig = async () => {
+  const loadScoringConfig = useCallback(async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/scoring-config`)
       if (res.ok) setScoringCfg(await res.json())
     } catch (e) { console.error('Error loading scoring config:', e) }
+  }, [apiFetch])
+
+  useEffect(() => {
+    loadData(); loadTasks(); loadSupplierConfig(); loadScoringConfig()
+  }, [loadData, loadTasks, loadSupplierConfig, loadScoringConfig])
+
+  // ---------- пайплайн ----------
+  const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  useEffect(() => () => stopPolling(), [])
+
+  const pollJob = (jobId: string) => {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await apiFetch(`${API_URL}/api/pipeline-status/${jobId}`)
+        if (!res.ok) return
+        const data: PipelineJob = await res.json()
+        setJob(data)
+        if (data.status === 'done') {
+          stopPolling(); setIsPipelineRunning(false)
+          toast(data.message, 'success')
+          loadData(); loadTasks()
+        } else if (data.status === 'error') {
+          stopPolling(); setIsPipelineRunning(false)
+          toast(data.error || 'Ошибка пайплайна', 'error')
+          loadTasks()
+        }
+      } catch { /* сервер недоступен — продолжаем опрос */ }
+    }, 2000)
   }
 
+  const startJobPolling = async (res: Response) => {
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data.jobId) {
+      toast(data.error || 'Не удалось запустить поиск', 'error')
+      setIsPipelineRunning(false); loadTasks()
+      return
+    }
+    toast(data.alreadyRunning ? 'Поиск уже выполняется, показываю прогресс' : 'Поиск запущен. Это займёт 1–3 минуты...', 'info')
+    pollJob(data.jobId)
+  }
+
+  const handleRunTask = async (task: SearchTask) => {
+    if (isPipelineRunning) { toast('Дождитесь завершения текущего поиска', 'error'); return }
+    setIsPipelineRunning(true); setJob(null)
+    try {
+      const res = await apiFetch(`${API_URL}/api/search-tasks/${task.id}/run`, { method: 'POST' })
+      await startJobPolling(res)
+    } catch { toast('Ошибка соединения с сервером', 'error'); setIsPipelineRunning(false) }
+  }
+
+  // ---------- задачи ----------
+  const newTaskDefaults = () => ({
+    name: '',
+    city: scoringCfg?.searchDefaults?.city || 'Екатеринбург',
+    industry: scoringCfg?.searchDefaults?.industry || 'автозапчасти',
+    limit: scoringCfg?.searchDefaults?.limit || 5,
+    scoring: null, use_ai: true, use_geocode: true,
+  })
+
+  const handleSaveTask = async () => {
+    if (!taskForm) return
+    try {
+      const isNew = !taskForm.id
+      const res = await apiFetch(isNew ? `${API_URL}/api/search-tasks` : `${API_URL}/api/search-tasks/${taskForm.id}`, {
+        method: isNew ? 'POST' : 'PUT',
+        body: JSON.stringify({
+          name: taskForm.name, city: taskForm.city, industry: taskForm.industry,
+          limit: taskForm.limit, scoring: taskForm.scoring || null,
+          use_ai: taskForm.use_ai !== false, use_geocode: taskForm.use_geocode !== false,
+        })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось сохранить задачу', 'error'); return }
+      toast(isNew ? 'Задача поиска создана' : 'Задача обновлена', 'success')
+      setTaskForm(null); loadTasks()
+    } catch { toast('Ошибка соединения с сервером', 'error') }
+  }
+
+  const handleDeleteTask = async (task: SearchTask) => {
+    if (!window.confirm(`Удалить задачу "${task.name}"?`)) return
+    try {
+      await apiFetch(`${API_URL}/api/search-tasks/${task.id}`, { method: 'DELETE' })
+      toast('Задача удалена', 'success'); loadTasks()
+    } catch { toast('Ошибка соединения с сервером', 'error') }
+  }
+
+  // ---------- настройки скоринга ----------
   const openSettings = () => {
     const d = scoringCfg || {}
     setSettingsDraft({
@@ -196,9 +214,8 @@ export default function App() {
       retailPenalty: typeof d.retailPenalty === 'number' ? d.retailPenalty : 15,
       city: d.searchDefaults?.city || 'Екатеринбург',
       industry: d.searchDefaults?.industry || 'автозапчасти',
-      limit: d.searchDefaults?.limit || 5
+      limit: d.searchDefaults?.limit || 5,
     })
-    setSettingsOpen(true)
   }
 
   const handleSaveSettings = async () => {
@@ -210,163 +227,42 @@ export default function App() {
           weights: settingsDraft.weights,
           tiers: settingsDraft.tiers,
           retailPenalty: settingsDraft.retailPenalty,
-          searchDefaults: { city: settingsDraft.city, industry: settingsDraft.industry, limit: settingsDraft.limit }
+          searchDefaults: { city: settingsDraft.city, industry: settingsDraft.industry, limit: settingsDraft.limit },
         })
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) { toast(data.error || 'Не удалось сохранить настройки', 'error'); return }
-      setScoringCfg(prev => ({ ...(prev || {}), ...data }))
-      setSettingsOpen(false)
+      setScoringCfg((prev: any) => ({ ...(prev || {}), ...data }))
+      setSettingsDraft(null)
       toast('Настройки скоринга и поиска сохранены', 'success')
-    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
   const handleRescoreAll = async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/leads/rescore`, { method: 'POST' })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
         toast(`Пересчитано ${data.rescored} лидов: A=${data.distribution.A}, B=${data.distribution.B}, C=${data.distribution.C}`, 'success')
         loadData()
-      } else {
-        toast('Не удалось пересчитать лида', 'error')
-      }
-    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+      } else toast('Не удалось пересчитать лида', 'error')
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
-  const stopPolling = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-  }
-
-  const pollJob = (jobId: string) => {
-    stopPolling()
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await apiFetch(`${API_URL}/api/pipeline-status/${jobId}`)
-        if (!res.ok) return
-        const data: PipelineJob = await res.json()
-        setJob(data)
-        if (data.status === 'done') {
-          stopPolling()
-          setIsPipelineRunning(false)
-          toast(data.message, 'success')
-          loadData()
-          loadTasks()
-        } else if (data.status === 'error') {
-          stopPolling()
-          setIsPipelineRunning(false)
-          toast(data.error || 'Ошибка пайплайна', 'error')
-          loadTasks()
-        }
-      } catch { /* сервер недоступен — продолжаем опрос */ }
-    }, 2000)
-  }
-
-  useEffect(() => () => stopPolling(), [])
-
-  // --- Сущность "Поиск лидов": задачи с параметрами ---
-  const startJobPolling = async (res: Response) => {
-    const data = await res.json()
-    if (!res.ok || !data.jobId) {
-      toast(data.error || 'Не удалось запустить поиск', 'error')
-      setIsPipelineRunning(false)
-      loadTasks()
-      return
-    }
-    if (data.alreadyRunning) {
-      toast('Поиск уже выполняется, показываю прогресс', 'info')
-    } else {
-      toast('Поиск запущен. Это займёт 1–3 минуты...', 'info')
-    }
-    setTaskForm(null)
-    pollJob(data.jobId)
-  }
-
-  const handleRunTask = async (task: any) => {
-    if (isPipelineRunning) { toast('Дождитесь завершения текущего поиска', 'error'); return }
-    setIsPipelineRunning(true)
-    setJob(null)
-    try {
-      const res = await apiFetch(`${API_URL}/api/search-tasks/${task.id}/run`, { method: 'POST' })
-      await startJobPolling(res)
-    } catch (e) {
-      toast('Ошибка соединения с сервером', 'error')
-      setIsPipelineRunning(false)
-    }
-  }
-
-  const handleSaveTask = async () => {
-    if (!taskForm) return
-    if (!taskForm.name?.trim() || !taskForm.city?.trim() || !taskForm.industry?.trim()) {
-      toast('Заполните название, город и отрасль', 'error')
-      return
-    }
-    try {
-      const isNew = !taskForm.id
-      const res = await fetch(isNew ? `${API_URL}/api/search-tasks` : `${API_URL}/api/search-tasks/${taskForm.id}`, {
-        method: isNew ? 'POST' : 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: taskForm.name,
-          city: taskForm.city,
-          industry: taskForm.industry,
-          limit: taskForm.limit || 5,
-          scoring: taskForm.scoring || null,
-          use_ai: taskForm.use_ai !== false,
-          use_geocode: taskForm.use_geocode !== false
-        })
-      })
-      if (res.ok) {
-        toast(isNew ? 'Задача поиска создана' : 'Задача обновлена', 'success')
-        setTaskForm(null)
-        loadTasks()
-      } else {
-        toast('Не удалось сохранить задачу', 'error')
-      }
-    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
-  }
-
-  const handleDeleteTask = async (task: any) => {
-    if (!window.confirm(`Удалить задачу "${task.name}"?`)) return
-    await apiFetch(`${API_URL}/api/search-tasks/${task.id}`, { method: 'DELETE' })
-    toast('Задача удалена', 'success')
-    loadTasks()
-  }
-
+  // ---------- лиды ----------
   const handleStatusChange = async (leadId: string, newStatus: string) => {
     const lead = leads.find(l => l.id === leadId)
-    await apiFetch(`${API_URL}/api/leads/${leadId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: newStatus,
-        status_history: [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
-      })
-    })
-    loadData()
-    if (selectedLead?.id === leadId) setSelectedLead({ ...lead, status: newStatus } as Lead)
-  }
-
-  const handleSaveSupplier = async () => {
-    setSupplier(tempSupplier)
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('supplier_config', JSON.stringify(tempSupplier))
-    }
-    setIsSupplierModalOpen(false)
     try {
-      await apiFetch(`${API_URL}/api/supplier-config`, {
+      await apiFetch(`${API_URL}/api/leads/${leadId}`, {
         method: 'PUT',
-        body: JSON.stringify({ name: tempSupplier.name, contact: tempSupplier.contact })
+        body: JSON.stringify({
+          status: newStatus,
+          status_history: [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
+        })
       })
-      toast('Данные поставщика обновлены', 'success')
-    } catch (e) {
-      toast('Сохранено локально, но сервер недоступен', 'error')
-    }
-  }
-
-  const handleCopyEmail = (email: string) => {
-    navigator.clipboard.writeText(email)
-    toast(`Email ${email} скопирован`, 'success')
+      loadData()
+      if (selectedLead?.id === leadId) setSelectedLead({ ...selectedLead, status: newStatus })
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
   const buildLetter = (lead: Lead) => {
@@ -382,9 +278,17 @@ export default function App() {
       '',
       'С уважением,',
       `${supplier.contact}`,
-      supplier.name
+      supplier.name,
     ].join('\n')
     return { subject, body }
+  }
+
+  const markLetterCopied = (id: string) => {
+    setCopiedLetters(c => {
+      const next = { ...c, [id]: true }
+      try { localStorage.setItem('copied_letters', JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
   }
 
   const handleCopyLetter = (lead: Lead) => {
@@ -407,10 +311,8 @@ export default function App() {
       if (res.ok) {
         const blob = await res.blob()
         window.open(URL.createObjectURL(blob), '_blank')
-      } else {
-        toast('Файл КП не найден на сервере', 'error')
-      }
-    } catch (e) { toast('Ошибка скачивания КП', 'error') }
+      } else toast('Файл КП не найден на сервере', 'error')
+    } catch { toast('Ошибка скачивания КП', 'error') }
   }
 
   const handleExportCSV = async () => {
@@ -422,42 +324,58 @@ export default function App() {
       const a = document.createElement('a')
       a.href = url
       a.download = `leads_${new Date().toISOString().slice(0, 10)}.csv`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
+      document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(url)
       toast(`Выгружено ${leads.length} лидов в CSV`, 'success')
-    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
   const handleDeleteLead = async (lead: Lead) => {
     if (!window.confirm(`Удалить лид «${lead.company_name}»? Действие необратимо.`)) return
     try {
       const res = await apiFetch(`${API_URL}/api/leads/${lead.id}`, { method: 'DELETE' })
-      if (res.ok) {
-        toast('Лид удалён', 'success')
-        setSelectedLead(null)
-        loadData()
-      } else {
-        toast('Не удалось удалить лид', 'error')
-      }
-    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+      if (res.ok) { toast('Лид удалён', 'success'); setSelectedLead(null); loadData() }
+      else toast('Не удалось удалить лид', 'error')
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
   const handleAddComment = async () => {
     if (!newComment.trim() || !selectedLead) return
-    await apiFetch(`${API_URL}/api/leads/${selectedLead.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ comments: [...(selectedLead.comments || []), newComment] })
-    })
-    setNewComment('')
-    loadData()
-    const updated = { ...selectedLead, comments: [...(selectedLead.comments || []), newComment] }
-    setSelectedLead(updated)
+    const comments = [...(selectedLead.comments || []), newComment]
+    try {
+      await apiFetch(`${API_URL}/api/leads/${selectedLead.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ comments })
+      })
+      setNewComment('')
+      setSelectedLead({ ...selectedLead, comments })
+      loadData()
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
-  const filteredLeads = leads.filter(l => {
+  // ---------- поставщик ----------
+  const handleSaveSupplier = async () => {
+    setSupplier(supplierDraft)
+    try { localStorage.setItem('supplier_config', JSON.stringify(supplierDraft)) } catch { /* ignore */ }
+    setSupplierOpen(false)
+    try {
+      await apiFetch(`${API_URL}/api/supplier-config`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: supplierDraft.name, contact: supplierDraft.contact })
+      })
+      toast('Данные поставщика обновлены', 'success')
+    } catch { toast('Сохранено локально, но сервер недоступен', 'error') }
+  }
+
+  const handleSaveToken = () => {
+    if (!tokenInput.trim()) return
+    localStorage.setItem('api_token', tokenInput.trim())
+    setAuthRequired(false); setTokenInput('')
+    loadData(); loadTasks()
+  }
+
+  // ---------- фильтр ----------
+  const filteredLeads = useMemo(() => leads.filter(l => {
     if (statusFilter !== 'all' && l.status !== statusFilter) return false
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase()
@@ -470,710 +388,405 @@ export default function App() {
       (l.lpr_emails || []).some(e => e.toLowerCase().includes(q)) ||
       (l.brands || []).some(b => b.toLowerCase().includes(q))
     )
-  })
+  }), [leads, searchQuery, statusFilter])
 
-  if (loading) return <div style={{ color: 'white', padding: 40, textAlign: 'center' }}>Загрузка системы...</div>
+  const TITLES: Record<TabId, string> = {
+    search: 'Поиск лидов', table: 'Работа с лидами', map: 'Карта и сектора',
+    managers: 'Менеджеры', analytics: 'Аналитика',
+  }
 
-  const getStatusColor = (s: string) => ({
-    new: '#64748B', contacted: '#3B82F6', in_progress: '#8B5CF6',
-    not_target: '#F59E0B', blacklisted: '#EF4444', converted: '#10B981'
-  }[s] || '#64748B')
+  const checklist = selectedLead ? [
+    { label: 'ЛПР найден', done: selectedLead.lpr.length > 0 && selectedLead.lpr[0].name !== 'Руководитель' },
+    { label: 'Email есть', done: (selectedLead.lpr_emails || []).length > 0 },
+    { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
+    { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
+    { label: 'КП отправлено', done: ['contacted', 'in_progress', 'converted'].includes(selectedLead.status) },
+  ] : []
 
-  const getStatusText = (s: string) => ({
-    new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
-    not_target: 'Не целевой', blacklisted: 'Черный список', converted: 'Клиент'
-  }[s] || s)
+  const sm = selectedLead ? (STATUS_META[selectedLead.status] || STATUS_META.new) : STATUS_META.new
+  const tm = selectedLead ? (TIER_META[selectedLead.lead_tier] || TIER_META.C) : TIER_META.C
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0F172A', color: '#F8FAFC', fontFamily: 'sans-serif', padding: '20px' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', flexWrap: 'wrap', gap: '16px' }}>
-        <div>
-          <h1 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '4px' }}>B2B Lead Pipeline</h1>
-          <p style={{ color: '#94A3B8', fontSize: '14px' }}>AI-генератор целевых лидов и персональных КП</p>
-        </div>
-        <div style={{ display: 'flex', gap: '12px' }}>
+    <div className="min-h-screen md:flex">
+      <Sidebar active={activeTab} onChange={setActiveTab} pipelineRunning={isPipelineRunning} />
+
+      <main className="flex-1 min-w-0 px-4 md:px-8 py-5 md:py-7">
+        {/* Верхняя панель */}
+        <div className="hidden md:flex items-center justify-between gap-4 mb-7">
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">{TITLES[activeTab]}</h1>
           <button
-            onClick={() => setActiveTab('search')}
-            disabled={isPipelineRunning}
-            style={{ 
-              backgroundColor: isPipelineRunning ? '#64748B' : '#10B981', 
-              border: 'none', color: 'white', padding: '8px 16px', borderRadius: '6px', 
-              cursor: isPipelineRunning ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600' 
-            }}
+            onClick={() => { setSupplierDraft(supplier); setSupplierOpen(true) }}
+            className="btn-ghost !py-2"
           >
-            <Search size={16} /> {isPipelineRunning ? 'Поиск выполняется...' : 'Запустить поиск'}
-          </button>
-          <button
-            onClick={() => { setTempSupplier(supplier); setIsSupplierModalOpen(true) }}
-            style={{ backgroundColor: '#334155', border: '1px solid #475569', color: 'white', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
-            <Briefcase size={16} /> Поставщик: {supplier.name}
+            <Briefcase size={14} />
+            <span className="max-w-[220px] truncate">Поставщик: {supplier.name}</span>
           </button>
         </div>
-      </header>
 
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', borderBottom: '1px solid #334155', paddingBottom: '12px', overflowX: 'auto' }}>
-        {[
-          { id: 'search', label: 'Поиск лидов', icon: Search },
-          { id: 'table', label: 'Работа с лидами', icon: Users },
-          { id: 'map', label: 'Карта и сектора', icon: MapIcon },
-          { id: 'managers', label: 'Менеджеры', icon: Briefcase },
-          { id: 'analytics', label: 'Аналитика', icon: BarChart3 }
-        ].map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} style={{
-            backgroundColor: activeTab === tab.id ? '#3B82F6' : 'transparent',
-            border: 'none', color: 'white', padding: '8px 16px', borderRadius: '6px',
-            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', whiteSpace: 'nowrap'
-          }}>
-            <tab.icon size={16} /> {tab.label}
-          </button>
-        ))}
-      </div>
+        {activeTab === 'search' && (
+          <SearchPage
+            tasks={searchTasks}
+            isPipelineRunning={isPipelineRunning}
+            scoringCfg={scoringCfg}
+            onNewTask={() => setTaskForm(newTaskDefaults())}
+            onRunTask={handleRunTask}
+            onEditTask={(t) => setTaskForm({ ...t, scoring: t.scoring || null })}
+            onDeleteTask={handleDeleteTask}
+            onGoLeads={() => setActiveTab('table')}
+            onOpenSettings={openSettings}
+          />
+        )}
+        {activeTab === 'table' && (
+          <LeadsPage
+            leads={leads}
+            loading={loading}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            filteredLeads={filteredLeads}
+            onOpenLead={setSelectedLead}
+            onCopyLetter={handleCopyLetter}
+            onDownloadPDF={handleDownloadPDF}
+            onExportCSV={handleExportCSV}
+            onStatusChange={handleStatusChange}
+          />
+        )}
+        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} />}
+        {activeTab === 'managers' && <ManagersPage managers={managers} analytics={analytics} />}
+        {activeTab === 'analytics' && <AnalyticsPage analytics={analytics} leads={leads} loading={loading} />}
+      </main>
 
-      {activeTab === 'search' && (
-        <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-            <div>
-              <h2 style={{ fontSize: '18px', fontWeight: 'bold' }}>Задачи поиска лидов</h2>
-              <p style={{ color: '#94A3B8', fontSize: '13px' }}>Задайте, что и где искать, параметры скоринга и обогащения — затем запускайте в один клик</p>
-            </div>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <button
-                onClick={openSettings}
-                style={{ backgroundColor: '#334155', border: '1px solid #475569', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                ⚙️ Настройки скоринга
-              </button>
-              <button
-                onClick={() => setTaskForm({
-                  name: '',
-                  city: scoringCfg?.searchDefaults?.city || 'Екатеринбург',
-                  industry: scoringCfg?.searchDefaults?.industry || 'автозапчасти',
-                  limit: scoringCfg?.searchDefaults?.limit || 5,
-                  scoring: null, use_ai: true, use_geocode: true
-                })}
-                style={{ backgroundColor: '#10B981', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <Search size={16} /> Новая задача
-              </button>
-            </div>
-          </div>
-
-          {settingsOpen && settingsDraft && (
-            <div style={{ backgroundColor: '#0F172A', border: '1px solid #475569', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h3 style={{ fontSize: '15px', fontWeight: '600' }}>Глобальные настройки скоринга и поиска</h3>
-                <button onClick={() => setSettingsOpen(false)} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }}><X size={18} /></button>
-              </div>
-
-              <div style={{ marginBottom: '16px' }}>
-                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px', textTransform: 'uppercase' }}>Что и где искать по умолчанию (подставляется в новые задачи)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
-                  <div>
-                    <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Город</label>
-                    <input value={settingsDraft.city} onChange={e => setSettingsDraft({ ...settingsDraft, city: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Отрасль</label>
-                    <input value={settingsDraft.industry} onChange={e => setSettingsDraft({ ...settingsDraft, industry: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Лимит компаний (1–20)</label>
-                    <input type="number" min={1} max={20} value={settingsDraft.limit} onChange={e => setSettingsDraft({ ...settingsDraft, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                  </div>
+      {/* Drawer лида */}
+      <Drawer open={Boolean(selectedLead)} onClose={() => setSelectedLead(null)} title={selectedLead?.company_name}>
+        {selectedLead && (
+          <div className="space-y-7">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              {[
+                ['Сайт', selectedLead.domain],
+                ['Город', selectedLead.city],
+                ['Lead Score', String(selectedLead.lead_score)],
+              ].map(([k, v]) => (
+                <div key={k}>
+                  <div className="label">{k}</div>
+                  <div className="text-sm font-semibold text-slate-100">{v}</div>
                 </div>
+              ))}
+              <div>
+                <div className="label">Tier</div>
+                <span className={`chip ${tm.bg} ${tm.color} !px-2.5 !py-1`}>Tier {selectedLead.lead_tier}</span>
               </div>
-
-              <div style={{ marginBottom: '16px' }}>
-                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px', textTransform: 'uppercase' }}>Веса скоринга (сумма 100)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
-                  {[
-                    ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Бренды'],
-                    ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент сайта']
-                  ].map(([key, label]) => (
-                    <div key={key}>
-                      <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>{label}</label>
-                      <input type="number" min={0} max={100} value={settingsDraft.weights[key]}
-                        onChange={e => setSettingsDraft({ ...settingsDraft, weights: { ...settingsDraft.weights, [key]: Math.max(0, parseInt(e.target.value) || 0) } })}
-                        style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', marginBottom: '20px' }}>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>Штраф за розницу</label>
-                  <input type="number" min={0} max={100} value={settingsDraft.retailPenalty}
-                    onChange={e => setSettingsDraft({ ...settingsDraft, retailPenalty: Math.max(0, parseInt(e.target.value) || 0) })}
-                    style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>Порог Tier A (≥)</label>
-                  <input type="number" min={0} max={100} value={settingsDraft.tiers.a}
-                    onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, a: Math.max(0, parseInt(e.target.value) || 0) } })}
-                    style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>Порог Tier B (≥)</label>
-                  <input type="number" min={0} max={100} value={settingsDraft.tiers.b}
-                    onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, b: Math.max(0, parseInt(e.target.value) || 0) } })}
-                    style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                <button onClick={handleRescoreAll} style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontSize: '13px' }}>♻️ Пересчитать лидов</button>
-                <button onClick={() => setSettingsOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
-                <button onClick={handleSaveSettings} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Сохранить настройки</button>
-              </div>
-              <p style={{ color: '#64748B', fontSize: '12px', marginTop: '12px' }}>Эти параметры используются всеми задачами без индивидуальных весов. «Пересчитать лидов» применит текущие настройки к уже найденным лидам.</p>
-            </div>
-          )}
-
-          {taskForm && (
-            <div style={{ backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '15px', fontWeight: '600', marginBottom: '16px' }}>{taskForm.id ? 'Редактирование задачи' : 'Новая задача поиска'}</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Название задачи</label>
-                  <input value={taskForm.name} onChange={e => setTaskForm({ ...taskForm, name: e.target.value })} placeholder="Напр.: Опт Екб — крупные" style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Город</label>
-                  <input value={taskForm.city} onChange={e => setTaskForm({ ...taskForm, city: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Отрасль</label>
-                  <input value={taskForm.industry} onChange={e => setTaskForm({ ...taskForm, industry: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Сколько компаний (1–20)</label>
-                  <input type="number" min={1} max={20} value={taskForm.limit} onChange={e => setTaskForm({ ...taskForm, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                </div>
-              </div>
-
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', marginBottom: '8px' }}>
-                  <input type="checkbox" checked={taskForm.scoring !== null} onChange={e => setTaskForm({ ...taskForm, scoring: e.target.checked ? { weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 } } : null })} />
-                  Индивидуальные веса скоринга (иначе — scoring_config.json)
-                </label>
-                {taskForm.scoring && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', padding: '12px', backgroundColor: '#1E293B', borderRadius: '8px' }}>
-                    {[
-                      ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Бренды'],
-                      ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент']
-                    ].map(([key, label]) => (
-                      <div key={key}>
-                        <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>{label}</label>
-                        <input type="number" min={0} max={100} value={taskForm.scoring.weights[key]}
-                          onChange={e => setTaskForm({ ...taskForm, scoring: { weights: { ...taskForm.scoring.weights, [key]: Math.max(0, parseInt(e.target.value) || 0) } } })}
-                          style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '6px', color: 'white', outline: 'none', fontSize: '13px' }} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', flexWrap: 'wrap' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
-                  <input type="checkbox" checked={taskForm.use_ai !== false} onChange={e => setTaskForm({ ...taskForm, use_ai: e.target.checked })} />
-                  AI-обогащение (ЛПР, размер бизнеса через Gemini)
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
-                  <input type="checkbox" checked={taskForm.use_geocode !== false} onChange={e => setTaskForm({ ...taskForm, use_geocode: e.target.checked })} />
-                  Геокодинг адресов (Nominatim)
-                </label>
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                <button onClick={() => setTaskForm(null)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
-                <button onClick={handleSaveTask} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Сохранить задачу</button>
-              </div>
-            </div>
-          )}
-
-          {searchTasks.length === 0 ? (
-            <div style={{ padding: '40px', textAlign: 'center', color: '#64748B' }}>Задач поиска пока нет. Создайте первую — задайте, что и где искать.</div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
-              {searchTasks.map(task => {
-                const statusStyle: any = {
-                  draft: { bg: '#334155', color: '#94A3B8', text: 'Черновик' },
-                  running: { bg: '#1E3A5F', color: '#93C5FD', text: 'Выполняется...' },
-                  done: { bg: '#14532D', color: '#86EFAC', text: 'Выполнена' },
-                  error: { bg: '#7F1D1D', color: '#FCA5A5', text: 'Ошибка' }
-                }
-                const st = statusStyle[task.status] || statusStyle.draft
-                return (
-                  <div key={task.id} style={{ backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', padding: '16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
-                      <div style={{ fontWeight: '600', fontSize: '15px' }}>{task.name}</div>
-                      <span style={{ backgroundColor: st.bg, color: st.color, padding: '3px 10px', borderRadius: '10px', fontSize: '11px', whiteSpace: 'nowrap' }}>{st.text}</span>
-                    </div>
-                    <div style={{ color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>{task.city} · {task.industry} · до {task.limit} компаний</div>
-                    <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '10px' }}>
-                      {task.scoring ? 'Индивидуальные веса скоринга' : 'Скоринг по scoring_config.json'}
-                      {task.use_ai === false ? ' · без AI' : ''}{task.use_geocode === false ? ' · без геокодинга' : ''}
-                    </div>
-                    {task.last_run && (
-                      <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '10px' }}>
-                        Последний запуск: {new Date(task.last_run).toLocaleString('ru-RU')} — найдено {task.leads_found ?? 0}, добавлено {task.leads_added ?? 0}
-                        {task.last_error ? <div style={{ color: '#FCA5A5' }}>{task.last_error}</div> : null}
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      <button onClick={() => handleRunTask(task)} disabled={isPipelineRunning} style={{ backgroundColor: isPipelineRunning ? '#334155' : '#10B981', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: isPipelineRunning ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Search size={13} /> Запустить
-                      </button>
-                      <button onClick={() => setActiveTab('table')} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: 'pointer', fontSize: '12px' }}>К лидам</button>
-                      <button onClick={() => setTaskForm({ ...task, scoring: task.scoring || null })} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: 'pointer', fontSize: '12px' }}>Изменить</button>
-                      <button onClick={() => handleDeleteTask(task)} style={{ backgroundColor: '#7F1D1D', border: 'none', borderRadius: '6px', padding: '7px 14px', color: 'white', cursor: 'pointer', fontSize: '12px' }}>Удалить</button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'table' && (
-        <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-            <div style={{ backgroundColor: '#0F172A', padding: '16px', borderRadius: '8px', border: '2px solid #6366F1' }}>
-              <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>ВСЕГО В БАЗЕ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{leads.length}</div>
-            </div>
-            <div style={{ backgroundColor: '#0F172A', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#3B82F6', marginBottom: '4px' }}>НОВЫЕ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3B82F6' }}>{leads.filter(l => l.status === 'new').length}</div>
-            </div>
-            <div style={{ backgroundColor: '#0F172A', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#F59E0B', marginBottom: '4px' }}>В РАБОТЕ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#F59E0B' }}>{leads.filter(l => l.status === 'in_progress').length}</div>
-            </div>
-            <div style={{ backgroundColor: '#0F172A', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#10B981', marginBottom: '4px' }}>КЛИЕНТЫ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10B981' }}>{leads.filter(l => l.status === 'converted').length}</div>
-            </div>
-          </div>
-
-          <div style={{ marginBottom: '24px' }}>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Поиск по компании, сайту, ЛПР или брендам..."
-              style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '8px', padding: '12px 16px', color: '#F8FAFC', fontSize: '14px', outline: 'none', marginBottom: '16px' }}
-            />
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: '200px' }}>
-                <label style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px', display: 'block' }}>Статус</label>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px 12px', color: '#F8FAFC', fontSize: '13px', outline: 'none' }}>
-                  <option value="all">Все статусы</option>
-                  <option value="new">Новые</option>
-                  <option value="contacted">КП отправлено</option>
-                  <option value="in_progress">В работе</option>
-                  <option value="not_target">Не целевые</option>
-                  <option value="blacklisted">Черный список</option>
-                  <option value="converted">Клиенты</option>
+              <div>
+                <div className="label">Статус</div>
+                <select
+                  value={selectedLead.status}
+                  onChange={e => handleStatusChange(selectedLead.id, e.target.value)}
+                  className={`input !w-auto !py-1.5 !px-2.5 text-[12px] font-semibold !bg-ink-800 ${sm.color}`}
+                >
+                  {Object.entries(STATUS_META).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
                 </select>
               </div>
+              <div>
+                <div className="label">Размер бизнеса</div>
+                <div className="text-sm text-slate-200">
+                  {SIZE_LABELS[selectedLead.business_size || 'unknown']}{selectedLead.wholesale ? ' · опт' : ''}
+                </div>
+              </div>
+              <div className="col-span-2 sm:col-span-3">
+                <div className="label">Источник</div>
+                <div className="text-sm text-slate-200">{selectedLead.search_task_name || 'Ручной импорт'}</div>
+              </div>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ fontSize: '13px', color: '#94A3B8' }}>Найдено: {filteredLeads.length} из {leads.length} лидов</div>
-              <button onClick={handleExportCSV} style={{ backgroundColor: '#334155', border: '1px solid #475569', borderRadius: '6px', padding: '6px 14px', color: 'white', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Download size={13} /> Экспорт CSV
+
+            {selectedLead.reason && (
+              <div className="rounded-xl border-l-2 border-indigo-500 bg-indigo-500/5 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-indigo-300 mb-1">Почему этому лиду стоит продавать</div>
+                <div className="text-[13px] text-slate-300 leading-relaxed">{selectedLead.reason}</div>
+              </div>
+            )}
+
+            <div>
+              <div className="label">Готовность к отправке</div>
+              <div className="card !bg-ink-800/60 px-4 py-3">
+                <ReadinessChecklist items={checklist} />
+              </div>
+            </div>
+
+            <div>
+              <div className="label">ЛПР</div>
+              <div className="space-y-2">
+                {selectedLead.lpr.map((person, i) => (
+                  <div key={i} className="card !bg-ink-800/60 p-3.5">
+                    <div className="font-semibold text-slate-100 text-sm">{person.name}</div>
+                    <div className="text-[12px] text-slate-500 mb-2">{person.position}</div>
+                    {selectedLead.lpr_emails[i] && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Mail size={12} className="text-slate-600" />
+                        <span className="text-[13px] text-slate-300">{selectedLead.lpr_emails[i]}</span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(selectedLead.lpr_emails[i]); toast('Email скопирован', 'success') }}
+                          className="text-slate-600 hover:text-white transition-colors" title="Скопировать email"
+                        >
+                          <Copy size={12} />
+                        </button>
+                        <button
+                          onClick={() => handleMailto(selectedLead)}
+                          className="chip bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors ml-auto"
+                        >
+                          <Send size={11} /> В почту
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Бренды</div>
+              <div className="flex flex-wrap gap-1.5">
+                {selectedLead.brands.map((b, i) => (
+                  <span key={i} className="chip bg-ink-700 text-slate-300 !px-2.5 !py-1">{b}</span>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="label">История статусов</div>
+              <div className="card !bg-ink-800/60 divide-y divide-line max-h-44 overflow-y-auto">
+                {(selectedLead.status_history || []).map((item, i) => {
+                  const m = STATUS_META[item.status] || STATUS_META.new
+                  return (
+                    <div key={i} className="flex items-center justify-between px-4 py-2.5 text-[13px]">
+                      <span className={`flex items-center gap-2 ${m.color}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
+                        {m.label}
+                      </span>
+                      <span className="text-slate-500 text-[12px]">{item.date}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Комментарии</div>
+              <div className="space-y-2 mb-3 max-h-44 overflow-y-auto">
+                {(selectedLead.comments || []).length === 0 && (
+                  <div className="text-slate-600 text-sm italic">Нет комментариев</div>
+                )}
+                {(selectedLead.comments || []).map((c, i) => (
+                  <div key={i} className="card !bg-ink-800/60 px-3.5 py-2.5 text-[13px] text-slate-300">{c}</div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={newComment}
+                  onChange={e => setNewComment(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleAddComment() }}
+                  placeholder="Новый комментарий..."
+                  className="input"
+                />
+                <button onClick={handleAddComment} className="btn-primary shrink-0 !px-4">Добавить</button>
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 flex-wrap pt-2 border-t border-line">
+              <button onClick={() => handleCopyLetter(selectedLead)} className="btn-primary text-[13px]">
+                <Copy size={14} /> Скопировать письмо
+              </button>
+              <button
+                onClick={() => handleMailto(selectedLead)}
+                disabled={!selectedLead.lpr_emails[0]}
+                className="btn-ghost text-[13px]"
+                title="Открыть в почтовом клиенте"
+              >
+                <Send size={14} /> В почту
+              </button>
+              <button
+                onClick={() => handleDownloadPDF(selectedLead)}
+                disabled={!selectedLead.pdf_file}
+                className="btn-ghost text-[13px]"
+              >
+                <FileDown size={14} /> {selectedLead.pdf_file ? 'Открыть КП' : 'КП нет'}
+              </button>
+              <button onClick={() => handleDeleteLead(selectedLead)} className="btn-danger text-[13px] ml-auto">
+                <Trash2 size={14} /> Удалить
               </button>
             </div>
           </div>
+        )}
+      </Drawer>
 
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid #334155' }}>
-                  {['КОМПАНИЯ & САЙТ', 'ЛПР & КОНТАКТЫ', 'БРЕНДЫ', 'СКОР', 'СТАТУС', 'ДЕЙСТВИЯ'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '12px', color: '#94A3B8', fontSize: '12px' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredLeads.length === 0 ? (
-                  <tr><td colSpan={6} style={{ padding: '32px', textAlign: 'center', color: '#64748B' }}>Лиды не найдены</td></tr>
-                ) : (
-                  filteredLeads.map((lead) => (
-                    <tr key={lead.id} style={{ borderBottom: '1px solid #334155' }}>
-                      <td style={{ padding: '16px 12px' }}>
-                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>{lead.company_name}</div>
-                        <div style={{ color: '#64748B', fontSize: '13px' }}>{lead.domain}</div>
-                        <div style={{ color: '#64748B', fontSize: '12px', marginBottom: '4px' }}>{lead.city}</div>
-                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                          {lead.search_task_name && (
-                            <span style={{ backgroundColor: '#3B2F5B', color: '#C4B5FD', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }} title={`Задача поиска: ${lead.search_task_name}`}>🔍 {lead.search_task_name}</span>
-                          )}
-                          {lead.business_size && lead.business_size !== 'unknown' && (
-                            <span style={{ backgroundColor: '#1E3A5F', color: '#93C5FD', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
-                              {{ small: 'Малый бизнес', medium: 'Средний бизнес', large: 'Крупный бизнес' }[lead.business_size]}
-                            </span>
-                          )}
-                          {lead.wholesale && (
-                            <span style={{ backgroundColor: '#14532D', color: '#86EFAC', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>Опт</span>
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding: '16px 12px' }}>
-                        {lead.lpr.map((p, idx) => (
-                          <div key={idx} style={{ marginBottom: '8px' }}>
-                            <div style={{ fontSize: '13px', marginBottom: '2px' }}>{p.name}</div>
-                            <div style={{ display: 'inline-block', backgroundColor: '#334155', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', color: '#94A3B8', marginRight: '8px' }}>{p.position}</div>
-                            {lead.lpr_emails[idx] && (
-                              <div style={{ fontSize: '12px', color: '#64748B', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <span>{lead.lpr_emails[idx]}</span>
-                                <button onClick={() => handleCopyEmail(lead.lpr_emails[idx])} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', color: '#94A3B8', fontSize: '11px' }}>Copy</button>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </td>
-                      <td style={{ padding: '16px 12px' }}>
-                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                          {lead.brands.slice(0, 3).map((brand, idx) => (
-                            <span key={idx} style={{ backgroundColor: '#334155', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>{brand}</span>
-                          ))}
-                          {lead.brands.length > 3 && <span style={{ fontSize: '12px', color: '#94A3B8' }}>+{lead.brands.length - 3}</span>}
-                        </div>
-                      </td>
-                      <td style={{ padding: '16px 12px' }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '16px' }}>{lead.lead_score}</div>
-                        <div style={{ display: 'inline-block', backgroundColor: lead.lead_tier === 'A' ? '#10B981' : lead.lead_tier === 'B' ? '#F59E0B' : '#EF4444', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', marginTop: '4px' }}>Tier {lead.lead_tier}</div>
-                      </td>
-                      <td style={{ padding: '16px 12px' }}>
-                        <select value={lead.status} onChange={(e) => handleStatusChange(lead.id, e.target.value)} style={{ backgroundColor: getStatusColor(lead.status) + '20', color: getStatusColor(lead.status), border: `1px solid ${getStatusColor(lead.status)}`, borderRadius: '6px', padding: '6px 12px', fontSize: '13px', fontWeight: '500', cursor: 'pointer', outline: 'none' }}>
-                          <option value="new">Новый</option>
-                          <option value="contacted">КП отправлено</option>
-                          <option value="in_progress">В работе</option>
-                          <option value="not_target">Не целевой</option>
-                          <option value="blacklisted">Черный список</option>
-                          <option value="converted">Клиент</option>
-                        </select>
-                      </td>
-                      <td style={{ padding: '16px 12px' }}>
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                          <button onClick={() => setSelectedLead(lead)} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}>Открыть</button>
-                          <button onClick={() => handleCopyLetter(lead)} title="Скопировать текст письма" style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <Copy size={14} /> Письмо
-                          </button>
-                          <button onClick={() => handleDownloadPDF(lead)} style={{ backgroundColor: lead.pdf_file ? '#10B981' : '#64748B', border: 'none', borderRadius: '6px', padding: '8px 12px', color: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <Download size={14} /> КП
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'map' && (
-        <div style={{ height: 'calc(100vh - 200px)', minHeight: '600px' }}>
-          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '16px', marginBottom: '16px' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>Карта лидов и секторов</h3>
-            <p style={{ color: '#94A3B8', fontSize: '13px' }}>
-              Показано {sectors.length} секторов и {filteredLeads.filter(l => l.coordinates).length} лидов на карте
-            </p>
-          </div>
-          <div style={{ height: 'calc(100% - 80px)', borderRadius: '12px', overflow: 'hidden', border: '1px solid #334155' }}>
-            <MapContainer 
-              center={[56.838011, 60.597474]} 
-              zoom={12} 
-              style={{ height: '100%', width: '100%' }}
-              ref={mapRef}
-            >
-              <TileLayer 
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-              {sectors.map((sec: any) => (
-                <Polygon 
-                  key={sec.id} 
-                  pathOptions={{ color: sec.color || '#3B82F6', fillColor: sec.color || '#3B82F6', fillOpacity: 0.2, weight: 2 }} 
-                  positions={sec.polygon?.geometry?.coordinates?.[0]?.map((c: any) => [c[1], c[0]]) || []}
-                >
-                  <Popup>
-                    <b>{sec.name}</b><br />
-                    Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}
-                  </Popup>
-                </Polygon>
-              ))}
-              {filteredLeads.map(lead => lead.coordinates && (
-                <Marker 
-                  key={lead.id} 
-                  position={[lead.coordinates.lat, lead.coordinates.lng]}
-                >
-                  <Popup>
-                    <b>{lead.company_name}</b><br />
-                    {lead.city}<br />
-                    Скор: {lead.lead_score} | Tier: {lead.lead_tier}<br />
-                    Статус: {getStatusText(lead.status)}
-                  </Popup>
-                </Marker>
-              ))}
-            </MapContainer>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'managers' && (
-        <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
-          <h2 style={{ marginBottom: '20px' }}>Управление менеджерами</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
-            {managers.map(m => {
-              const stats = analytics?.managers?.find((am: any) => am.id === m.id)
-              return (
-                <div key={m.id} style={{ backgroundColor: '#0F172A', padding: '16px', borderRadius: '8px', border: '1px solid #334155' }}>
-                  <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '8px' }}>{m.name}</div>
-                  <div style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '4px' }}>{m.position}</div>
-                  <div style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '4px' }}>{m.email}</div>
-                  <div style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '12px' }}>{m.phone}</div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <span style={{ backgroundColor: '#334155', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>Лидов: {stats?.leadsCount || 0}</span>
-                    <span style={{ backgroundColor: '#10B981', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', color: 'white' }}>Клиентов: {stats?.convertedCount || 0}</span>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'analytics' && analytics && (
-        <div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-            <div style={{ backgroundColor: '#1E293B', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>ВСЕГО ЛИДОВ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{analytics.total}</div>
-            </div>
-            <div style={{ backgroundColor: '#1E293B', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>НОВЫЕ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3B82F6' }}>{analytics.new}</div>
-            </div>
-            <div style={{ backgroundColor: '#1E293B', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>В РАБОТЕ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#F59E0B' }}>{analytics.in_progress}</div>
-            </div>
-            <div style={{ backgroundColor: '#1E293B', padding: '16px', borderRadius: '8px' }}>
-              <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>КЛИЕНТЫ</div>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10B981' }}>{analytics.converted}</div>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
-            <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
-              <h3 style={{ marginBottom: '16px' }}>Воронка по статусам</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={[
-                  { name: 'Новые', value: analytics.new },
-                  { name: 'В работе', value: analytics.in_progress },
-                  { name: 'Клиенты', value: analytics.converted }
-                ]}>
-                  <XAxis dataKey="name" stroke="#94A3B8" />
-                  <YAxis stroke="#94A3B8" />
-                  <Tooltip contentStyle={{ backgroundColor: '#0F172A', border: '1px solid #334155', color: 'white' }} />
-                  <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '24px' }}>
-              <h3 style={{ marginBottom: '16px' }}>Эффективность менеджеров</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={analytics.managers} layout="vertical">
-                  <XAxis type="number" stroke="#94A3B8" />
-                  <YAxis dataKey="name" type="category" stroke="#94A3B8" width={150} />
-                  <Tooltip contentStyle={{ backgroundColor: '#0F172A', border: '1px solid #334155', color: 'white' }} />
-                  <Bar dataKey="leadsCount" fill="#8B5CF6" radius={[0, 4, 4, 0]} name="Всего лидов" />
-                  <Bar dataKey="convertedCount" fill="#10B981" radius={[0, 4, 4, 0]} name="Клиенты" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {selectedLead && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSelectedLead(null)}>
-          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', maxWidth: '700px', width: '100%', maxHeight: '80vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
-              <h2 style={{ fontSize: '20px', fontWeight: 'bold' }}>{selectedLead.company_name}</h2>
-              <button onClick={() => setSelectedLead(null)} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }}><X size={24} /></button>
-            </div>
-
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Основная информация</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Сайт</div><div style={{ fontSize: '14px' }}>{selectedLead.domain}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Город</div><div style={{ fontSize: '14px' }}>{selectedLead.city}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Lead Score</div><div style={{ fontSize: '14px', fontWeight: 'bold' }}>{selectedLead.lead_score}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Tier</div><div style={{ display: 'inline-block', backgroundColor: selectedLead.lead_tier === 'A' ? '#10B981' : selectedLead.lead_tier === 'B' ? '#F59E0B' : '#EF4444', padding: '4px 12px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>Tier {selectedLead.lead_tier}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Размер бизнеса</div><div style={{ fontSize: '14px' }}>{{ small: 'Малый', medium: 'Средний', large: 'Крупный', unknown: 'Не определён' }[selectedLead.business_size || 'unknown']}{selectedLead.wholesale ? ' · опт' : ''}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Статус</div><div style={{ fontSize: '14px' }}>{getStatusText(selectedLead.status)}</div></div>
-                <div><div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>Источник</div><div style={{ fontSize: '14px' }}>{selectedLead.search_task_name || 'Ручной импорт'}</div></div>
+      {/* Форма задачи */}
+      <CenterModal open={Boolean(taskForm)} onClose={() => setTaskForm(null)} title={taskForm?.id ? 'Редактирование задачи' : 'Новая задача поиска'} width="max-w-2xl">
+        {taskForm && (
+          <div className="space-y-5">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div className="sm:col-span-2">
+                <label className="label">Название задачи</label>
+                <input value={taskForm.name} onChange={e => setTaskForm({ ...taskForm, name: e.target.value })} placeholder="Напр.: Опт Екб — крупные сети" className="input" />
               </div>
-              {selectedLead.reason && (
-                <div style={{ marginTop: '12px', backgroundColor: '#0F172A', borderLeft: '3px solid #3B82F6', padding: '10px 12px', borderRadius: '0 6px 6px 0', fontSize: '13px', color: '#94A3B8' }}>
-                  <b style={{ color: '#F8FAFC' }}>Почему этому лиду стоит продавать:</b> {selectedLead.reason}
+              <div>
+                <label className="label">Город</label>
+                <input value={taskForm.city} onChange={e => setTaskForm({ ...taskForm, city: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Отрасль</label>
+                <input value={taskForm.industry} onChange={e => setTaskForm({ ...taskForm, industry: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Сколько компаний (1–20)</label>
+                <input type="number" min={1} max={20} value={taskForm.limit} onChange={e => setTaskForm({ ...taskForm, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} className="input" />
+              </div>
+            </div>
+
+            <div>
+              <label className="flex items-center gap-2.5 cursor-pointer text-sm text-slate-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={taskForm.scoring !== null}
+                  onChange={e => setTaskForm({ ...taskForm, scoring: e.target.checked ? { weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 } } : null })}
+                />
+                Индивидуальные веса скоринга (иначе — глобальный конфиг)
+              </label>
+              {taskForm.scoring && (
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-3 card !bg-ink-800/60 p-4">
+                  {SCORING_FIELDS.map(([key, label]) => (
+                    <div key={key}>
+                      <label className="label !mb-1">{label}</label>
+                      <input
+                        type="number" min={0} max={100}
+                        value={taskForm.scoring.weights[key]}
+                        onChange={e => setTaskForm({ ...taskForm, scoring: { weights: { ...taskForm.scoring.weights, [key]: Math.max(0, parseInt(e.target.value) || 0) } } })}
+                        className="input !px-2.5 !py-1.5 text-[13px]"
+                      />
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Готовность к отправке</h3>
-              <div style={{ backgroundColor: '#0F172A', padding: '12px', borderRadius: '8px' }}>
-                {[
-                  { label: 'ЛПР найден', done: selectedLead.lpr.length > 0 && selectedLead.lpr[0].name !== 'Руководитель' },
-                  { label: 'Email есть', done: (selectedLead.lpr_emails || []).length > 0 },
-                  { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
-                  { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
-                  { label: 'КП отправлено', done: ['contacted', 'in_progress', 'converted'].includes(selectedLead.status) }
-                ].map((item, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '13px', color: item.done ? '#86EFAC' : '#64748B' }}>
-                    <span style={{ width: '16px', textAlign: 'center' }}>{item.done ? '✓' : '○'}</span> {item.label}
+            <div className="flex gap-6 flex-wrap">
+              <label className="flex items-center gap-2.5 cursor-pointer text-sm text-slate-300 select-none">
+                <input type="checkbox" checked={taskForm.use_ai !== false} onChange={e => setTaskForm({ ...taskForm, use_ai: e.target.checked })} />
+                AI-обогащение (Gemini)
+              </label>
+              <label className="flex items-center gap-2.5 cursor-pointer text-sm text-slate-300 select-none">
+                <input type="checkbox" checked={taskForm.use_geocode !== false} onChange={e => setTaskForm({ ...taskForm, use_geocode: e.target.checked })} />
+                Геокодинг (Nominatim)
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button onClick={() => setTaskForm(null)} className="btn-ghost">Отмена</button>
+              <button onClick={handleSaveTask} className="btn-primary">Сохранить задачу</button>
+            </div>
+          </div>
+        )}
+      </CenterModal>
+
+      {/* Настройки скоринга */}
+      <CenterModal open={Boolean(settingsDraft)} onClose={() => setSettingsDraft(null)} title="Глобальные настройки скоринга и поиска" width="max-w-2xl">
+        {settingsDraft && (
+          <div className="space-y-5">
+            <div>
+              <div className="label">Что и где искать по умолчанию</div>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <input value={settingsDraft.city} onChange={e => setSettingsDraft({ ...settingsDraft, city: e.target.value })} className="input" placeholder="Город" />
+                <input value={settingsDraft.industry} onChange={e => setSettingsDraft({ ...settingsDraft, industry: e.target.value })} className="input" placeholder="Отрасль" />
+                <input type="number" min={1} max={20} value={settingsDraft.limit} onChange={e => setSettingsDraft({ ...settingsDraft, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} className="input" placeholder="Лимит" />
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Веса скоринга (сумма 100)</div>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                {SCORING_FIELDS.map(([key, label]) => (
+                  <div key={key}>
+                    <label className="label !mb-1">{label}</label>
+                    <input
+                      type="number" min={0} max={100}
+                      value={settingsDraft.weights[key]}
+                      onChange={e => setSettingsDraft({ ...settingsDraft, weights: { ...settingsDraft.weights, [key]: Math.max(0, parseInt(e.target.value) || 0) } })}
+                      className="input !px-2.5 !py-1.5 text-[13px]"
+                    />
                   </div>
                 ))}
               </div>
             </div>
 
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>ЛПР</h3>
-              {selectedLead.lpr.map((p, i) => (
-                <div key={i} style={{ backgroundColor: '#0F172A', padding: '12px', borderRadius: '8px', marginBottom: '8px' }}>
-                  <div style={{ fontWeight: '600', marginBottom: '4px' }}>{p.name}</div>
-                  <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px' }}>{p.position}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '13px', color: '#64748B' }}>{selectedLead.lpr_emails[i]}</span>
-                    {selectedLead.lpr_emails[i] && (
-                      <>
-                        <button onClick={() => handleCopyEmail(selectedLead.lpr_emails[i])} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', color: '#94A3B8', fontSize: '11px' }}>Copy</button>
-                        <button onClick={handleMailto.bind(null, selectedLead)} title="Открыть в почтовом клиенте" style={{ backgroundColor: '#334155', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', color: '#94A3B8', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}><Mail size={11} /> В почту</button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Бренды</h3>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                {selectedLead.brands.map((brand, idx) => (
-                  <span key={idx} style={{ backgroundColor: '#334155', padding: '6px 12px', borderRadius: '6px', fontSize: '13px' }}>{brand}</span>
-                ))}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="label !mb-1">Штраф за розницу</label>
+                <input type="number" min={0} max={100} value={settingsDraft.retailPenalty} onChange={e => setSettingsDraft({ ...settingsDraft, retailPenalty: Math.max(0, parseInt(e.target.value) || 0) })} className="input !px-2.5 !py-1.5 text-[13px]" />
+              </div>
+              <div>
+                <label className="label !mb-1">Tier A (≥)</label>
+                <input type="number" min={0} max={100} value={settingsDraft.tiers.a} onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, a: Math.max(0, parseInt(e.target.value) || 0) } })} className="input !px-2.5 !py-1.5 text-[13px]" />
+              </div>
+              <div>
+                <label className="label !mb-1">Tier B (≥)</label>
+                <input type="number" min={0} max={100} value={settingsDraft.tiers.b} onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, b: Math.max(0, parseInt(e.target.value) || 0) } })} className="input !px-2.5 !py-1.5 text-[13px]" />
               </div>
             </div>
 
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>История статусов</h3>
-              <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
-                {(selectedLead.status_history || []).map((item: any, idx: number) => (
-                  <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #334155', fontSize: '13px' }}>
-                    <span style={{ color: getStatusColor(item.status) }}>{getStatusText(item.status)}</span>
-                    <span style={{ color: '#64748B', fontSize: '12px' }}>{item.date}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <p className="text-[12px] text-slate-500">Параметры используются всеми задачами без индивидуальных весов. «Пересчитать лидов» применит настройки к уже найденным лидам.</p>
 
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '12px', textTransform: 'uppercase' }}>Комментарии</h3>
-              <div style={{ maxHeight: '150px', overflowY: 'auto', marginBottom: '12px' }}>
-                {(selectedLead.comments || []).length === 0 ? <div style={{ color: '#64748B', fontStyle: 'italic' }}>Нет комментариев</div> :
-                  (selectedLead.comments || []).map((c: string, i: number) => <div key={i} style={{ backgroundColor: '#0F172A', padding: '10px', borderRadius: '6px', marginBottom: '6px', fontSize: '13px' }}>{c}</div>)}
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Новый комментарий..."
-                  style={{ flex: 1, backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddComment() }}
-                />
-                <button onClick={handleAddComment} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Добавить</button>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-              <button onClick={() => handleCopyLetter(selectedLead)} style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}><Copy size={14} /> Скопировать письмо</button>
-              <button onClick={() => handleMailto(selectedLead)} disabled={!selectedLead.lpr_emails[0]} style={{ backgroundColor: selectedLead.lpr_emails[0] ? '#3B82F6' : '#64748B', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}><Send size={14} /> В почту</button>
-              <button onClick={() => handleDownloadPDF(selectedLead)} style={{ backgroundColor: selectedLead.pdf_file ? '#10B981' : '#64748B', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Скачать КП</button>
-              <button onClick={() => handleDeleteLead(selectedLead)} style={{ backgroundColor: '#7F1D1D', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Удалить</button>
-              <button onClick={() => setSelectedLead(null)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '10px 20px', color: '#F8FAFC', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}>Закрыть</button>
+            <div className="flex justify-end gap-2.5 flex-wrap">
+              <button onClick={handleRescoreAll} className="btn-ghost !text-violet-300">
+                <RefreshCw size={14} /> Пересчитать лидов
+              </button>
+              <button onClick={() => setSettingsDraft(null)} className="btn-ghost">Отмена</button>
+              <button onClick={handleSaveSettings} className="btn-primary">Сохранить</button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </CenterModal>
 
-      {isSupplierModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setIsSupplierModalOpen(false)}>
-          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', width: '400px' }} onClick={e => e.stopPropagation()}>
-            <h2 style={{ marginBottom: '20px' }}>Настройки поставщика</h2>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Название компании</label>
-              <input value={tempSupplier.name} onChange={e => setTempSupplier({ ...tempSupplier, name: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
-            </div>
-            <div style={{ marginBottom: '24px' }}>
-              <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Контактное лицо</label>
-              <input value={tempSupplier.contact} onChange={e => setTempSupplier({ ...tempSupplier, contact: e.target.value })} style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none' }} />
-            </div>
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button onClick={() => setIsSupplierModalOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
-              <button onClick={handleSaveSupplier} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Сохранить</button>
-            </div>
+      {/* Настройки поставщика */}
+      <CenterModal open={supplierOpen} onClose={() => setSupplierOpen(false)} title="Настройки поставщика" width="max-w-md">
+        <div className="space-y-4">
+          <div>
+            <label className="label">Название компании</label>
+            <input value={supplierDraft.name || ''} onChange={e => setSupplierDraft({ ...supplierDraft, name: e.target.value })} className="input" />
+          </div>
+          <div>
+            <label className="label">Контактное лицо</label>
+            <input value={supplierDraft.contact || ''} onChange={e => setSupplierDraft({ ...supplierDraft, contact: e.target.value })} className="input" />
+          </div>
+          <div className="flex justify-end gap-2.5 pt-1">
+            <button onClick={() => setSupplierOpen(false)} className="btn-ghost">Отмена</button>
+            <button onClick={handleSaveSupplier} className="btn-primary">Сохранить</button>
           </div>
         </div>
-      )}
+      </CenterModal>
 
-      {isPipelineRunning && job && (
-        <div style={{ position: 'fixed', bottom: '24px', right: '24px', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '12px', padding: '16px 20px', width: '320px', zIndex: 999 }}>
-          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '8px' }}>{job.message}</div>
-          <div style={{ height: '8px', backgroundColor: '#0F172A', borderRadius: '4px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${Math.min(100, (job.processed / Math.max(job.total, 1)) * 100)}%`, backgroundColor: '#3B82F6', transition: 'width 0.5s' }} />
-          </div>
-          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '6px' }}>{job.processed} / {job.total}</div>
-        </div>
-      )}
-
+      {/* Авторизация по ключу */}
       {authRequired && (
-        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3000 }}>
-          <div style={{ backgroundColor: '#1E293B', borderRadius: '12px', padding: '32px', width: '400px' }}>
-            <h2 style={{ marginBottom: '8px' }}>Требуется ключ доступа</h2>
-            <p style={{ color: '#94A3B8', fontSize: '13px', marginBottom: '20px' }}>Сервер защищён ключом API. Введите его — он сохранится в этом браузере.</p>
+        <div className="fixed inset-0 z-[3000] bg-black/85 backdrop-blur flex items-center justify-center p-4">
+          <div className="card w-full max-w-sm p-7 animate-fade-up">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 flex items-center justify-center mb-4">
+              <KeyRound size={22} className="text-indigo-300" />
+            </div>
+            <h2 className="text-lg font-extrabold text-white">Требуется ключ доступа</h2>
+            <p className="text-[13px] text-slate-500 mt-1.5 mb-5">Сервер защищён ключом API. Введите его — ключ сохранится в этом браузере.</p>
             <input
               type="password"
               value={tokenInput}
               onChange={e => setTokenInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleSaveToken() }}
               placeholder="Ключ доступа"
-              style={{ width: '100%', backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '6px', padding: '10px', color: 'white', outline: 'none', marginBottom: '16px', fontSize: '14px' }}
+              className="input mb-4"
+              autoFocus
             />
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button onClick={handleSaveToken} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Войти</button>
-            </div>
+            <button onClick={handleSaveToken} className="btn-primary w-full">Войти</button>
           </div>
         </div>
       )}
 
-      <div style={{ position: 'fixed', top: '20px', right: '20px', zIndex: 2000, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {toasts.map(t => (
-          <div key={t.id} style={{
-            backgroundColor: t.type === 'success' ? '#14532D' : t.type === 'error' ? '#7F1D1D' : '#1E3A5F',
-            border: `1px solid ${t.type === 'success' ? '#22C55E' : t.type === 'error' ? '#EF4444' : '#3B82F6'}`,
-            borderRadius: '8px', padding: '12px 16px', color: 'white', fontSize: '13px', maxWidth: '360px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
-          }}>
-            {t.text}
-          </div>
-        ))}
-      </div>
+      <ProgressWidget job={isPipelineRunning ? job : null} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }
