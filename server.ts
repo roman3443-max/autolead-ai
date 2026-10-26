@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
-import { runPipeline } from './src/pipeline.ts'
+import { runPipeline, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -173,6 +173,79 @@ app.put('/api/supplier-config', (req, res) => {
   const cfg = { name, contact }
   writeJSON('supplier_config.json', cfg)
   res.json(cfg)
+})
+
+// --- Глобальная конфигурация скоринга и дефолтов поиска (scoring_config.json) ---
+app.get('/api/scoring-config', (req, res) => {
+  const cfg = readJSON('scoring_config.json')
+  res.json({
+    weights: cfg?.weights || { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
+    tiers: cfg?.tiers || { a: 75, b: 50 },
+    retailPenalty: typeof cfg?.retailPenalty === 'number' ? cfg.retailPenalty : 15,
+    searchDefaults: loadSearchDefaults()
+  })
+})
+
+app.put('/api/scoring-config', (req, res) => {
+  const b = req.body || {}
+  const weights: any = {}
+  for (const k of ['lpr', 'emails', 'brands', 'businessSize', 'wholesale', 'content']) {
+    if (b.weights?.[k] !== undefined) {
+      const n = parseInt(b.weights[k])
+      if (!Number.isInteger(n) || n < 0 || n > 100) return res.status(400).json({ error: `Вес "${k}": число 0–100` })
+      weights[k] = n
+    }
+  }
+  const tiers: any = {}
+  for (const k of ['a', 'b']) {
+    if (b.tiers?.[k] !== undefined) {
+      const n = parseInt(b.tiers[k])
+      if (!Number.isInteger(n) || n < 0 || n > 100) return res.status(400).json({ error: `Порог тира "${k}": число 0–100` })
+      tiers[k] = n
+    }
+  }
+  let retailPenalty = undefined
+  if (b.retailPenalty !== undefined) {
+    const n = parseInt(b.retailPenalty)
+    if (!Number.isInteger(n) || n < 0 || n > 100) return res.status(400).json({ error: 'Штраф за розницу: число 0–100' })
+    retailPenalty = n
+  }
+  const searchDefaults: any = {}
+  if (b.searchDefaults) {
+    const city = String(b.searchDefaults.city || '').trim()
+    const industry = String(b.searchDefaults.industry || '').trim()
+    if (city && [...city].some(c => c.codePointAt(0) === 0xfffd)) return res.status(400).json({ error: 'Город: некорректная кодировка' })
+    if (industry && [...industry].some(c => c.codePointAt(0) === 0xfffd)) return res.status(400).json({ error: 'Отрасль: некорректная кодировка' })
+    if (city) searchDefaults.city = city.slice(0, 60)
+    if (industry) searchDefaults.industry = industry.slice(0, 60)
+    const limit = parseInt(b.searchDefaults.limit)
+    if (b.searchDefaults.limit !== undefined) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 20) return res.status(400).json({ error: 'Лимит поиска: число 1–20' })
+      searchDefaults.limit = limit
+    }
+  }
+
+  const current = readJSON('scoring_config.json') || {}
+  const next = {
+    ...current,
+    ...(Object.keys(weights).length ? { weights: { ...(current.weights || {}), ...weights } } : {}),
+    ...(Object.keys(tiers).length ? { tiers: { ...(current.tiers || {}), ...tiers } } : {}),
+    ...(retailPenalty !== undefined ? { retailPenalty } : {}),
+    ...(Object.keys(searchDefaults).length ? { searchDefaults: { ...(current.searchDefaults || {}), ...searchDefaults } } : {})
+  }
+  writeJSON('scoring_config.json', next)
+  res.json(next)
+})
+
+// Пересчёт скоринга всех лидов по текущей конфигурации (без внешних API)
+app.post('/api/leads/rescore', (req, res) => {
+  const leads = readJSON('leads_db.json')
+  const rescored = leads.map((l: any) => rescoreLead(l))
+  writeJSON('leads_db.json', rescored)
+  const dist: any = { A: 0, B: 0, C: 0 }
+  rescored.forEach((l: any) => { dist[l.lead_tier] = (dist[l.lead_tier] || 0) + 1 })
+  console.log(`♻️ Пересчитано ${rescored.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
+  res.json({ rescored: rescored.length, distribution: dist })
 })
 
 // --- Экспорт лидов в CSV (Excel-совместимый, с BOM) ---

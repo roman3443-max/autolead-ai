@@ -33,7 +33,11 @@ interface ScoringConfig {
   weights: { lpr: number; emails: number; brands: number; businessSize: number; wholesale: number; content: number }
   tiers: { a: number; b: number }
   businessSizeScores: { large: number; medium: number; small: number; unknown: number }
+  retailPenalty: number
 }
+
+// Глобальные настройки поиска «что и где искать» по умолчанию
+interface SearchDefaults { city: string; industry: string; limit: number }
 
 // Параметры конкретного запуска поиска (могут переопределять файл-конфиг)
 interface PipelineOptions {
@@ -45,15 +49,19 @@ interface PipelineOptions {
 const DEFAULT_SCORING: ScoringConfig = {
   weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
   tiers: { a: 75, b: 50 },
-  businessSizeScores: { large: 15, medium: 10, small: 5, unknown: 2 }
+  businessSizeScores: { large: 15, medium: 10, small: 5, unknown: 2 },
+  retailPenalty: 15
 }
+
+const DEFAULT_SEARCH: SearchDefaults = { city: 'Екатеринбург', industry: 'автозапчасти', limit: 5 }
 
 function loadScoringConfig(overrides?: Partial<ScoringConfig> | null): ScoringConfig {
   const cfg = readJSONFile('scoring_config.json', null)
   const base: ScoringConfig = cfg ? {
     weights: { ...DEFAULT_SCORING.weights, ...(cfg.weights || {}) },
     tiers: { ...DEFAULT_SCORING.tiers, ...(cfg.tiers || {}) },
-    businessSizeScores: { ...DEFAULT_SCORING.businessSizeScores, ...(cfg.businessSizeScores || {}) }
+    businessSizeScores: { ...DEFAULT_SCORING.businessSizeScores, ...(cfg.businessSizeScores || {}) },
+    retailPenalty: typeof cfg.retailPenalty === 'number' ? cfg.retailPenalty : DEFAULT_SCORING.retailPenalty
   } : DEFAULT_SCORING
   if (!cfg) {
     console.log('⚠️ scoring_config.json не найден — используются веса по умолчанию')
@@ -61,14 +69,26 @@ function loadScoringConfig(overrides?: Partial<ScoringConfig> | null): ScoringCo
   const merged: ScoringConfig = {
     weights: { ...base.weights, ...(overrides?.weights || {}) },
     tiers: { ...base.tiers, ...(overrides?.tiers || {}) },
-    businessSizeScores: { ...base.businessSizeScores, ...(overrides?.businessSizeScores || {}) }
+    businessSizeScores: { ...base.businessSizeScores, ...(overrides?.businessSizeScores || {}) },
+    retailPenalty: typeof overrides?.retailPenalty === 'number' ? overrides.retailPenalty : base.retailPenalty
   }
   const sum = Object.values(merged.weights).reduce((a, b) => a + b, 0)
   if (sum !== 100) {
     console.log(`⚠️ Сумма весов в scoring_config.json равна ${sum} (ожидалось 100). Скоринг работает, но проверьте конфиг.`)
   }
-  console.log('⚖️ Веса скоринга:', JSON.stringify(merged.weights))
+  console.log('⚖️ Веса скоринга:', JSON.stringify(merged.weights), '| штраф за розницу:', merged.retailPenalty)
   return merged
+}
+
+export function loadSearchDefaults(): SearchDefaults {
+  const cfg = readJSONFile('scoring_config.json', null)
+  const d = cfg?.searchDefaults || {}
+  const limit = parseInt(d.limit)
+  return {
+    city: String(d.city || DEFAULT_SEARCH.city).trim() || DEFAULT_SEARCH.city,
+    industry: String(d.industry || DEFAULT_SEARCH.industry).trim() || DEFAULT_SEARCH.industry,
+    limit: Number.isInteger(limit) && limit >= 1 && limit <= 20 ? limit : DEFAULT_SEARCH.limit
+  }
 }
 
 // --- Каталог поставщика (supplier_catalog.json) ---
@@ -352,9 +372,10 @@ function calculateLeadScore(cfg: ScoringConfig, input: {
   else if (input.brandsCount > 0) score += Math.round(w.brands / 2)
   score += cfg.businessSizeScores[input.businessSize] ?? cfg.businessSizeScores.unknown
   if (input.wholesale) score += w.wholesale
+  else score -= cfg.retailPenalty // штраф за розничный бизнес (как в исходной модели)
   if (input.contentLength > 1500) score += w.content
   else if (input.contentLength > 500) score += Math.round(w.content / 2)
-  return Math.min(score, 100)
+  return Math.max(0, Math.min(score, 100))
 }
 
 function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {

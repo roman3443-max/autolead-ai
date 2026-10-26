@@ -8,6 +8,8 @@
     "content": 15
   },
   "tiers": { "a": 75, "b": 50 },
+  "retailPenalty": 15,
   "businessSizeScores": { "large": 15, "medium": 10, "small": 5, "unknown": 2 },
-  "notes": "Сумма weights должна быть 100. tiers: >= a -> Tier A, >= b -> Tier B, иначе Tier C. businessSizeScores переопределяет вес businessSize по размеру бизнеса."
+  "searchDefaults": { "city": "Екатеринбург", "industry": "автозапчасти", "limit": 5 },
+  "notes": "Сумма weights = 100. tiers: >= a -> Tier A, >= b -> Tier B. retailPenalty вычитается за розничный бизнес (wholesale=false). searchDefaults подставляются в новые задачи поиска."
 }

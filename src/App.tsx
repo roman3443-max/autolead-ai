@@ -79,6 +79,9 @@ export default function App() {
   }
   const [searchTasks, setSearchTasks] = useState<any[]>([])
   const [taskForm, setTaskForm] = useState<any | null>(null)
+  const [scoringCfg, setScoringCfg] = useState<any>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsDraft, setSettingsDraft] = useState<any>(null)
 
   const toast = (text: string, type: Toast['type'] = 'info') => {
     const id = Date.now() + Math.random()
@@ -130,7 +133,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
 
-  useEffect(() => { loadData(); loadTasks(); loadSupplierConfig() }, [])
+  useEffect(() => { loadData(); loadTasks(); loadSupplierConfig(); loadScoringConfig() }, [])
 
   useEffect(() => {
     if (activeTab === 'map' && mapRef.current) {
@@ -175,6 +178,60 @@ export default function App() {
         try { localStorage.setItem('supplier_config', JSON.stringify(cfg)) } catch { /* ignore */ }
       }
     } catch (e) { console.error('Error loading supplier config:', e) }
+  }
+
+  // Глобальная конфигурация скоринга и дефолты поиска
+  const loadScoringConfig = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/scoring-config`)
+      if (res.ok) setScoringCfg(await res.json())
+    } catch (e) { console.error('Error loading scoring config:', e) }
+  }
+
+  const openSettings = () => {
+    const d = scoringCfg || {}
+    setSettingsDraft({
+      weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15, ...(d.weights || {}) },
+      tiers: { a: 75, b: 50, ...(d.tiers || {}) },
+      retailPenalty: typeof d.retailPenalty === 'number' ? d.retailPenalty : 15,
+      city: d.searchDefaults?.city || 'Екатеринбург',
+      industry: d.searchDefaults?.industry || 'автозапчасти',
+      limit: d.searchDefaults?.limit || 5
+    })
+    setSettingsOpen(true)
+  }
+
+  const handleSaveSettings = async () => {
+    if (!settingsDraft) return
+    try {
+      const res = await apiFetch(`${API_URL}/api/scoring-config`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          weights: settingsDraft.weights,
+          tiers: settingsDraft.tiers,
+          retailPenalty: settingsDraft.retailPenalty,
+          searchDefaults: { city: settingsDraft.city, industry: settingsDraft.industry, limit: settingsDraft.limit }
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) { toast(data.error || 'Не удалось сохранить настройки', 'error'); return }
+      setScoringCfg(prev => ({ ...(prev || {}), ...data }))
+      setSettingsOpen(false)
+      toast('Настройки скоринга и поиска сохранены', 'success')
+    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
+  }
+
+  const handleRescoreAll = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/rescore`, { method: 'POST' })
+      const data = await res.json()
+      if (res.ok) {
+        toast(`Пересчитано ${data.rescored} лидов: A=${data.distribution.A}, B=${data.distribution.B}, C=${data.distribution.C}`, 'success')
+        loadData()
+      } else {
+        toast('Не удалось пересчитать лида', 'error')
+      }
+    } catch (e) { toast('Ошибка соединения с сервером', 'error') }
   }
 
   const stopPolling = () => {
@@ -480,13 +537,99 @@ export default function App() {
               <h2 style={{ fontSize: '18px', fontWeight: 'bold' }}>Задачи поиска лидов</h2>
               <p style={{ color: '#94A3B8', fontSize: '13px' }}>Задайте, что и где искать, параметры скоринга и обогащения — затем запускайте в один клик</p>
             </div>
-            <button
-              onClick={() => setTaskForm({ name: '', city: 'Екатеринбург', industry: 'автозапчасти', limit: 5, scoring: null, use_ai: true, use_geocode: true })}
-              style={{ backgroundColor: '#10B981', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              <Search size={16} /> Новая задача
-            </button>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={openSettings}
+                style={{ backgroundColor: '#334155', border: '1px solid #475569', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                ⚙️ Настройки скоринга
+              </button>
+              <button
+                onClick={() => setTaskForm({
+                  name: '',
+                  city: scoringCfg?.searchDefaults?.city || 'Екатеринбург',
+                  industry: scoringCfg?.searchDefaults?.industry || 'автозапчасти',
+                  limit: scoringCfg?.searchDefaults?.limit || 5,
+                  scoring: null, use_ai: true, use_geocode: true
+                })}
+                style={{ backgroundColor: '#10B981', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Search size={16} /> Новая задача
+              </button>
+            </div>
           </div>
+
+          {settingsOpen && settingsDraft && (
+            <div style={{ backgroundColor: '#0F172A', border: '1px solid #475569', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 style={{ fontSize: '15px', fontWeight: '600' }}>Глобальные настройки скоринга и поиска</h3>
+                <button onClick={() => setSettingsOpen(false)} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer' }}><X size={18} /></button>
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px', textTransform: 'uppercase' }}>Что и где искать по умолчанию (подставляется в новые задачи)</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
+                  <div>
+                    <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Город</label>
+                    <input value={settingsDraft.city} onChange={e => setSettingsDraft({ ...settingsDraft, city: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Отрасль</label>
+                    <input value={settingsDraft.industry} onChange={e => setSettingsDraft({ ...settingsDraft, industry: e.target.value })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', color: '#94A3B8', fontSize: '12px', marginBottom: '4px' }}>Лимит компаний (1–20)</label>
+                    <input type="number" min={1} max={20} value={settingsDraft.limit} onChange={e => setSettingsDraft({ ...settingsDraft, limit: Math.min(20, Math.max(1, parseInt(e.target.value) || 5)) })} style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '8px', textTransform: 'uppercase' }}>Веса скоринга (сумма 100)</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
+                  {[
+                    ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Бренды'],
+                    ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент сайта']
+                  ].map(([key, label]) => (
+                    <div key={key}>
+                      <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>{label}</label>
+                      <input type="number" min={0} max={100} value={settingsDraft.weights[key]}
+                        onChange={e => setSettingsDraft({ ...settingsDraft, weights: { ...settingsDraft.weights, [key]: Math.max(0, parseInt(e.target.value) || 0) } })}
+                        style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', marginBottom: '20px' }}>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>Штраф за розницу</label>
+                  <input type="number" min={0} max={100} value={settingsDraft.retailPenalty}
+                    onChange={e => setSettingsDraft({ ...settingsDraft, retailPenalty: Math.max(0, parseInt(e.target.value) || 0) })}
+                    style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>Порог Tier A (≥)</label>
+                  <input type="number" min={0} max={100} value={settingsDraft.tiers.a}
+                    onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, a: Math.max(0, parseInt(e.target.value) || 0) } })}
+                    style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#94A3B8', fontSize: '11px', marginBottom: '2px' }}>Порог Tier B (≥)</label>
+                  <input type="number" min={0} max={100} value={settingsDraft.tiers.b}
+                    onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, b: Math.max(0, parseInt(e.target.value) || 0) } })}
+                    style={{ width: '100%', backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '6px', padding: '6px 8px', color: 'white', outline: 'none', fontSize: '13px' }} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                <button onClick={handleRescoreAll} style={{ backgroundColor: '#8B5CF6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontSize: '13px' }}>♻️ Пересчитать лидов</button>
+                <button onClick={() => setSettingsOpen(false)} style={{ backgroundColor: '#334155', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer' }}>Отмена</button>
+                <button onClick={handleSaveSettings} style={{ backgroundColor: '#3B82F6', border: 'none', borderRadius: '6px', padding: '8px 16px', color: 'white', cursor: 'pointer', fontWeight: '600' }}>Сохранить настройки</button>
+              </div>
+              <p style={{ color: '#64748B', fontSize: '12px', marginTop: '12px' }}>Эти параметры используются всеми задачами без индивидуальных весов. «Пересчитать лидов» применит текущие настройки к уже найденным лидам.</p>
+            </div>
+          )}
 
           {taskForm && (
             <div style={{ backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>

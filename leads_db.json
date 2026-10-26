@@ -23,7 +23,7 @@
       "Bosch",
       "TRW"
     ],
-    "lead_score": 70,
+    "lead_score": 55,
     "lead_tier": "B",
     "status": "in_progress",
     "pdf_file": null,
@@ -61,7 +61,7 @@
       "ВАЗ",
       "ГАЗ"
     ],
-    "lead_score": 70,
+    "lead_score": 55,
     "lead_tier": "B",
     "status": "contacted",
     "pdf_file": null,
@@ -101,7 +101,7 @@
       "Nissan",
       "Denso"
     ],
-    "lead_score": 70,
+    "lead_score": 55,
     "lead_tier": "B",
     "status": "new",
     "comments": [],
