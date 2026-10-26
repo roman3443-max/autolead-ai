@@ -436,11 +436,14 @@ export async function searchCompanies(city: string, industry: string, limit: num
       const msg = String(error?.message || error)
       const is429 = msg.includes('429') || msg.toLowerCase().includes('rate limit')
       console.error(`❌ Ошибка Tavily (попытка ${attempt}/3):`, msg.slice(0, 120))
-      if (!is429 || attempt === 3) return []
+      if (!is429 || attempt === 3) {
+        // Прокидываем реальную причину — чтобы в UI была точная ошибка (ключ/квота), а не "не найдено"
+        throw new Error(`Tavily: ${msg.slice(0, 200)}`)
+      }
       await new Promise(r => setTimeout(r, 4000 * attempt))
     }
   }
-  return []
+  throw lastError || new Error('Tavily: неизвестная ошибка')
 }
 
 // --- Этап 2: Обогащение данных через Firecrawl ---
@@ -604,6 +607,10 @@ export async function runPipeline(
   if (companies.length === 0) return []
 
   const leads = await enrichCompanyData(companies, city, (p, t) => onProgress?.('enrich', p, t), options)
+  if (companies.length > 0 && leads.length === 0) {
+    // Компании нашлись, но ни один сайт не спарсился — почти всегда это проблема Firecrawl
+    throw new Error(`Firecrawl: найдено ${companies.length} компаний, но ни один сайт не удалось спарсить. Проверьте FIRECRAWL_API_KEY и баланс кредитов.`)
+  }
   for (let i = 0; i < leads.length; i++) {
     onProgress?.('kp', i, leads.length)
     const kpFile = await generateKP(leads[i], supplierName)
