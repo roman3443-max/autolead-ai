@@ -1,16 +1,14 @@
 import express from 'express'
 import cors from 'cors'
-import fs from 'fs'
 import path from 'path'
 import { runPipeline, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
+import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
+import { authMiddleware, loginHandler, requireAdmin } from './src/auth.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
 const rootDir = process.cwd()
 
-// --- Безопасность ---
-// Если задан API_TOKEN, все /api-запросы требуют заголовок x-api-token
-const API_TOKEN = process.env.API_TOKEN || ''
 // Разрешённые источники (CORS). Переопределяется переменной ALLOWED_ORIGINS через запятую
 const DEFAULT_ORIGINS = [
   'https://autolead-ai-rosy.vercel.app',
@@ -24,11 +22,10 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || DEFAULT_ORIGINS.join(',')
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Запросы без Origin (curl, серверные скрипты) пропускаем
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true)
     callback(new Error('Not allowed by CORS'))
   },
-  allowedHeaders: ['Content-Type', 'x-api-token']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-token']
 }))
 app.use(express.json({ limit: '1mb' }))
 
@@ -40,14 +37,7 @@ app.use((req, res, next) => {
   next()
 })
 
-// Проверка токена (только если он задан в окружении)
-app.use('/api', (req, res, next) => {
-  if (!API_TOKEN) return next()
-  if (req.headers['x-api-token'] === API_TOKEN) return next()
-  res.status(401).json({ error: 'Требуется ключ доступа (x-api-token)' })
-})
-
-// Rate limit на запуск пайплайна: минимальный интервал между запусками
+// Rate limit на запуск пайплайна
 const RUN_COOLDOWN_MS = (parseInt(process.env.RUN_COOLDOWN_SECONDS || '') || 120) * 1000
 let lastRunAt = 0
 const runCooldown = (req: any, res: any, next: any) => {
@@ -61,125 +51,168 @@ const runCooldown = (req: any, res: any, next: any) => {
 
 app.use('/kp_final', express.static(path.join(rootDir, 'kp_final')))
 
-const readJSON = (file: string) => {
-  const filePath = path.join(rootDir, file)
-  if (!fs.existsSync(filePath)) return []
-  return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-}
-
-const writeJSON = (file: string, data: any) => {
-  fs.writeFileSync(path.join(rootDir, file), JSON.stringify(data, null, 2))
-}
-
-// Безопасное имя файла внутри kp_final (защита от path traversal)
-const kpFilePath = (fileName: string): string | null => {
+// Безопасное имя файла КП (защита от path traversal)
+const kpFileName = (fileName: any): string | null => {
   if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
-  if (fileName !== path.basename(fileName)) return null // запрещаем ../ и разделители
-  const resolved = path.resolve(rootDir, 'kp_final', fileName)
-  const kpDir = path.resolve(rootDir, 'kp_final') + path.sep
-  if (!resolved.startsWith(kpDir)) return null
-  return resolved
+  if (fileName !== path.basename(fileName)) return null
+  return fileName
 }
 
-// Получить все лиды
-app.get('/api/leads', (req, res) => {
-  res.json(readJSON('leads_db.json'))
+// ---------- auth ----------
+app.post('/api/auth/login', loginHandler)
+app.get('/api/auth/me', authMiddleware, (req: any, res) => res.json(req.user))
+app.use('/api', authMiddleware)
+
+// ---------- leads ----------
+app.get('/api/leads', async (req, res) => {
+  res.json(await db.leads.list())
 })
 
-// Обновить лид
-app.put('/api/leads/:id', (req, res) => {
-  const leads = readJSON('leads_db.json')
-  const idx = leads.findIndex((l: any) => l.id === req.params.id)
-  if (idx === -1) return res.status(404).json({ error: 'Лид не найден' })
-
+app.put('/api/leads/:id', async (req, res) => {
   const body = { ...req.body }
-  // pdf_file: только null или безопасное имя файла (иначе path traversal)
   if (body.pdf_file !== undefined) {
     if (body.pdf_file === null || body.pdf_file === '') {
       body.pdf_file = null
-    } else if (!kpFilePath(String(body.pdf_file))) {
+    } else if (!kpFileName(body.pdf_file)) {
       return res.status(400).json({ error: 'Некорректное имя файла КП' })
     }
   }
-  // id менять нельзя
   delete body.id
-
-  leads[idx] = { ...leads[idx], ...body }
-  writeJSON('leads_db.json', leads)
-  res.json(leads[idx])
+  const updated = await db.leads.update(req.params.id, body)
+  if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+  res.json(updated)
 })
 
-// Скачать КП (HTML/PDF)
-app.get('/api/leads/:id/pdf', (req, res) => {
-  const leads = readJSON('leads_db.json')
-  const lead = leads.find((l: any) => l.id === req.params.id)
+app.get('/api/leads/:id/pdf', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
   if (!lead?.pdf_file) return res.status(404).json({ error: 'КП не найдено' })
-
-  const filePath = kpFilePath(String(lead.pdf_file))
-  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Файл не существует' })
-
-  res.setHeader('Content-Type', 'text/html')
-  res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(lead.pdf_file))}"`)
-  fs.createReadStream(filePath).pipe(res)
+  const safeName = kpFileName(String(lead.pdf_file))
+  if (!safeName) return res.status(404).json({ error: 'Файл не существует' })
+  const content = await db.kp.get(safeName)
+  if (content === null) return res.status(404).json({ error: 'Файл не существует' })
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(safeName)}"`)
+  res.send(content)
 })
 
-// Получить сектора
-app.get('/api/sectors', (req, res) => {
-  res.json(readJSON('sectors.json'))
+app.delete('/api/leads/:id', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  if (lead.pdf_file) await db.kp.removeIfUnused(String(lead.pdf_file), lead.id)
+  await db.leads.remove(req.params.id)
+  res.json({ success: true })
 })
 
-// Создать сектор
-app.post('/api/sectors', (req, res) => {
-  const sectors = readJSON('sectors.json')
+app.post('/api/leads/rescore', async (req, res) => {
+  const leads = await db.leads.list()
+  let dist: any = { A: 0, B: 0, C: 0 }
+  for (const l of leads) {
+    const r = rescoreLead(l)
+    dist[r.lead_tier] = (dist[r.lead_tier] || 0) + 1
+    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier })
+  }
+  console.log(`♻️ Пересчитано ${leads.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
+  res.json({ rescored: leads.length, distribution: dist })
+})
+
+app.get('/api/leads/export', async (req, res) => {
+  const leads = await db.leads.list()
+  const esc = (v: any) => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const statusText: Record<string, string> = {
+    new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
+    not_target: 'Не целевой', blacklisted: 'Чёрный список', converted: 'Клиент'
+  }
+  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Email', 'Бренды', 'Размер', 'Опт', 'Источник', 'Комментарии']
+  const rows = leads.map((l: any) => [
+    l.company_name, l.domain, l.city, l.address || '',
+    l.lead_score, l.lead_tier, statusText[l.status] || l.status,
+    (l.lpr || []).map((p: any) => p.name).join('; '),
+    (l.lpr || []).map((p: any) => p.position).join('; '),
+    (l.lpr_emails || []).join('; '),
+    (l.brands || []).join('; '),
+    l.business_size || '', l.wholesale ? 'да' : 'нет',
+    l.search_task_name || 'Ручной импорт',
+    (l.comments || []).join(' | ')
+  ])
+  const csv = '﻿' + [header, ...rows].map(r => r.map(esc).join(';')).join('\r\n')
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="leads_${new Date().toISOString().slice(0, 10)}.csv"`)
+  res.send(csv)
+})
+
+// ---------- sectors / managers / analytics ----------
+app.get('/api/sectors', async (req, res) => {
+  res.json(await db.sectors.list())
+})
+
+app.post('/api/sectors', async (req, res) => {
   const newSector = { ...req.body, id: `sec_${Date.now()}` }
-  sectors.push(newSector)
-  writeJSON('sectors.json', sectors)
+  await db.sectors.create(newSector)
 
-  const leads = readJSON('leads_db.json')
-  const updatedLeads = leads.map((lead: any) => {
+  const leads = await db.leads.list()
+  for (const lead of leads) {
     if (lead.coordinates && newSector.polygon) {
       const coords = newSector.polygon.geometry.coordinates[0]
       const lngs = coords.map((c: any) => c[0])
       const lats = coords.map((c: any) => c[1])
       const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
       const minLat = Math.min(...lats), maxLat = Math.max(...lats)
-
       if (
         lead.coordinates.lng >= minLng && lead.coordinates.lng <= maxLng &&
         lead.coordinates.lat >= minLat && lead.coordinates.lat <= maxLat
       ) {
-        return { ...lead, sector_id: newSector.id, assigned_manager_id: newSector.manager_id }
+        await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
       }
     }
-    return lead
-  })
-  writeJSON('leads_db.json', updatedLeads)
+  }
   res.json(newSector)
 })
 
-// Получить менеджеров
-app.get('/api/managers', (req, res) => {
-  res.json(readJSON('managers.json'))
+app.get('/api/managers', async (req, res) => {
+  res.json(await db.managers.list())
 })
 
-// --- Настройки поставщика (единый источник для UI и пайплайна) ---
-app.get('/api/supplier-config', (req, res) => {
-  const cfg = readJSON('supplier_config.json')
+app.get('/api/analytics', async (req, res) => {
+  const leads = await db.leads.list()
+  const managers = await db.managers.list()
+  const sectors = await db.sectors.list()
+  res.json({
+    total: leads.length,
+    new: leads.filter((l: any) => l.status === 'new').length,
+    in_progress: leads.filter((l: any) => l.status === 'in_progress').length,
+    converted: leads.filter((l: any) => l.status === 'converted').length,
+    managers: managers.map((m: any) => ({
+      ...m,
+      leadsCount: leads.filter((l: any) => l.assigned_manager_id === m.id).length,
+      convertedCount: leads.filter((l: any) => l.assigned_manager_id === m.id && l.status === 'converted').length
+    })),
+    sectors: sectors.map((s: any) => ({
+      ...s,
+      leadsCount: leads.filter((l: any) => l.sector_id === s.id).length
+    }))
+  })
+})
+
+// ---------- settings ----------
+app.get('/api/supplier-config', async (req, res) => {
+  const cfg = await db.settings.get('supplier_config')
   res.json(cfg?.name ? cfg : { name: 'УралАвтоОпт', contact: 'Петров И.С.' })
 })
 
-app.put('/api/supplier-config', (req, res) => {
+app.put('/api/supplier-config', async (req, res) => {
   const name = String(req.body?.name || '').trim()
   const contact = String(req.body?.contact || '').trim()
   if (!name) return res.status(400).json({ error: 'Название поставщика обязательно' })
   const cfg = { name, contact }
-  writeJSON('supplier_config.json', cfg)
+  await db.settings.set('supplier_config', cfg)
   res.json(cfg)
 })
 
-// --- Глобальная конфигурация скоринга и дефолтов поиска (scoring_config.json) ---
-app.get('/api/scoring-config', (req, res) => {
-  const cfg = readJSON('scoring_config.json')
+app.get('/api/scoring-config', async (req, res) => {
+  const cfg = (await db.settings.get('scoring_config')) || {}
   res.json({
     weights: cfg?.weights || { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
     tiers: cfg?.tiers || { a: 75, b: 50 },
@@ -188,7 +221,7 @@ app.get('/api/scoring-config', (req, res) => {
   })
 })
 
-app.put('/api/scoring-config', (req, res) => {
+app.put('/api/scoring-config', async (req, res) => {
   const b = req.body || {}
   const weights: any = {}
   for (const k of ['lpr', 'emails', 'brands', 'businessSize', 'wholesale', 'content']) {
@@ -227,7 +260,7 @@ app.put('/api/scoring-config', (req, res) => {
     }
   }
 
-  const current = readJSON('scoring_config.json') || {}
+  const current = (await db.settings.get('scoring_config')) || {}
   const next = {
     ...current,
     ...(Object.keys(weights).length ? { weights: { ...(current.weights || {}), ...weights } } : {}),
@@ -235,124 +268,53 @@ app.put('/api/scoring-config', (req, res) => {
     ...(retailPenalty !== undefined ? { retailPenalty } : {}),
     ...(Object.keys(searchDefaults).length ? { searchDefaults: { ...(current.searchDefaults || {}), ...searchDefaults } } : {})
   }
-  writeJSON('scoring_config.json', next)
+  await db.settings.set('scoring_config', next)
   res.json(next)
 })
 
-// Пересчёт скоринга всех лидов по текущей конфигурации (без внешних API)
-app.post('/api/leads/rescore', (req, res) => {
-  const leads = readJSON('leads_db.json')
-  const rescored = leads.map((l: any) => rescoreLead(l))
-  writeJSON('leads_db.json', rescored)
-  const dist: any = { A: 0, B: 0, C: 0 }
-  rescored.forEach((l: any) => { dist[l.lead_tier] = (dist[l.lead_tier] || 0) + 1 })
-  console.log(`♻️ Пересчитано ${rescored.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
-  res.json({ rescored: rescored.length, distribution: dist })
+// ---------- users (admin) ----------
+app.get('/api/users', requireAdmin, async (req, res) => {
+  res.json(await db.users.list())
 })
 
-// --- Экспорт лидов в CSV (Excel-совместимый, с BOM) ---
-app.get('/api/leads/export', (req, res) => {
-  const leads = readJSON('leads_db.json')
-  const esc = (v: any) => {
-    const s = v === null || v === undefined ? '' : String(v)
-    return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+app.post('/api/users', requireAdmin, async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const password = String(req.body?.password || '')
+  const name = String(req.body?.name || '').trim()
+  const role = req.body?.role === 'admin' ? 'admin' : 'manager'
+  if (!email || !password || password.length < 6) {
+    return res.status(400).json({ error: 'Нужны email и пароль (минимум 6 символов)' })
   }
-  const statusText: Record<string, string> = {
-    new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
-    not_target: 'Не целевой', blacklisted: 'Черный список', converted: 'Клиент'
-  }
-  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Email', 'Бренды', 'Размер', 'Опт', 'Источник', 'Комментарии']
-  const rows = leads.map((l: any) => [
-    l.company_name, l.domain, l.city, l.address || '',
-    l.lead_score, l.lead_tier, statusText[l.status] || l.status,
-    (l.lpr || []).map((p: any) => p.name).join('; '),
-    (l.lpr || []).map((p: any) => p.position).join('; '),
-    (l.lpr_emails || []).join('; '),
-    (l.brands || []).join('; '),
-    l.business_size || '', l.wholesale ? 'да' : 'нет',
-    l.search_task_name || 'Ручной импорт',
-    (l.comments || []).join(' | ')
-  ])
-  const csv = '﻿' + [header, ...rows].map(r => r.map(esc).join(';')).join('\r\n')
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
-  res.setHeader('Content-Disposition', `attachment; filename="leads_${new Date().toISOString().slice(0, 10)}.csv"`)
-  res.send(csv)
+  const existing = await db.users.findByEmail(email)
+  if (existing) return res.status(400).json({ error: 'Пользователь с таким email уже есть' })
+  const bcrypt = await import('bcryptjs')
+  const password_hash = await bcrypt.hash(password, 10)
+  await db.users.create({ email, name, password_hash, role })
+  res.json({ email, name, role })
 })
 
-// Удалить лид
-app.delete('/api/leads/:id', (req, res) => {
-  const leads = readJSON('leads_db.json')
-  const idx = leads.findIndex((l: any) => l.id === req.params.id)
-  if (idx === -1) return res.status(404).json({ error: 'Лид не найден' })
-  const removed = leads.splice(idx, 1)[0]
-  // Удаляем файл КП, если он есть и не используется другими лидами
-  if (removed.pdf_file) {
-    const stillUsed = leads.some((l: any) => l.pdf_file === removed.pdf_file)
-    const filePath = kpFilePath(String(removed.pdf_file))
-    if (!stillUsed && filePath && fs.existsSync(filePath)) {
-      try { fs.unlinkSync(filePath) } catch { /* не критично */ }
-    }
-  }
-  writeJSON('leads_db.json', leads)
-  res.json({ success: true })
-})
+// ---------- пайплайн (джобы в БД) ----------
+const pipelineJobs: Record<string, any> = {}
 
-// Аналитика
-app.get('/api/analytics', (req, res) => {
-  const leads = readJSON('leads_db.json')
-  const managers = readJSON('managers.json')
-  const sectors = readJSON('sectors.json')
-
-  const stats = {
-    total: leads.length,
-    new: leads.filter((l: any) => l.status === 'new').length,
-    in_progress: leads.filter((l: any) => l.status === 'in_progress').length,
-    converted: leads.filter((l: any) => l.status === 'converted').length,
-    managers: managers.map((m: any) => ({
-      ...m,
-      leadsCount: leads.filter((l: any) => l.assigned_manager_id === m.id).length,
-      convertedCount: leads.filter((l: any) => l.assigned_manager_id === m.id && l.status === 'converted').length
-    })),
-    sectors: sectors.map((s: any) => ({
-      ...s,
-      leadsCount: leads.filter((l: any) => l.sector_id === s.id).length
-    }))
-  }
-  res.json(stats)
-})
-
-// 🚀 Асинхронный запуск пайплайна с прогрессом
-interface PipelineJob {
-  id: string
-  status: 'running' | 'done' | 'error'
-  stage: string
-  processed: number
-  total: number
-  added: number
-  totalFound: number
-  message: string
-  error?: string
-  startedAt: string
+async function updateJob(jobId: string, patch: any) {
+  pipelineJobs[jobId] = { ...pipelineJobs[jobId], ...patch }
+  await db.jobs.update(jobId, pipelineJobs[jobId]).catch(() => {})
 }
 
-const pipelineJobs: Record<string, PipelineJob> = {}
-
-// Единый запуск пайплайна в фоне. meta — служебные поля, которые попадут в новые лида (источник)
-function launchPipelineJob(params: {
+async function launchPipelineJob(params: {
   city: string; industry: string; limit: number
   options?: any
   source?: { search_task_id?: string; search_task_name?: string }
   onComplete?: (result: { status: string; found: number; added: number; error?: string }) => void
-}): { jobId: string } | null {
+}): Promise<{ jobId: string } | null> {
   const { city, industry, limit, options, source, onComplete } = params
   const safeLimit = Math.min(Math.max(parseInt(limit as any) || 5, 1), 20)
 
-  // Пропускаем, если пайплайн уже выполняется
-  const running = Object.values(pipelineJobs).find(j => j.status === 'running')
+  const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
   if (running) return null
 
   const jobId = `job_${Date.now()}`
-  pipelineJobs[jobId] = {
+  const initial = {
     id: jobId,
     status: 'running',
     stage: 'search',
@@ -363,6 +325,8 @@ function launchPipelineJob(params: {
     message: 'Поиск компаний...',
     startedAt: new Date().toISOString()
   }
+  pipelineJobs[jobId] = initial
+  db.jobs.create(initial).catch(() => {})
   console.log(`📥 Запуск поиска: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
 
   const stageText: Record<string, string> = {
@@ -374,37 +338,36 @@ function launchPipelineJob(params: {
 
   ;(async () => {
     try {
-      const supplierConfig = readJSON('supplier_config.json')
+      const supplierConfig = (await db.settings.get('supplier_config')) || {}
       const supplierName = supplierConfig?.name || 'УралАвтоОпт'
 
       const newLeads = await runPipeline(city, industry, safeLimit, supplierName, (stage, processed, total) => {
-        const job = pipelineJobs[jobId]
-        if (job) {
-          job.stage = stage
-          job.processed = processed
-          job.total = Math.max(total, 1)
-          job.message = stageText[stage] || stage
+        updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
+      }, {
+        ...options,
+        onKP: async (filename: string, content: string) => {
+          await db.kp.put(filename, null, content).catch((e: any) => console.error('⚠️ KP save:', e))
         }
-      }, options)
-
-      const job = pipelineJobs[jobId]
+      })
 
       if (newLeads.length === 0) {
-        job.status = 'error'
-        job.error = 'Компании не найдены. Попробуйте изменить город/отрасль или проверьте API-ключи.'
-        onComplete?.({ status: 'error', found: 0, added: 0, error: job.error })
+        await updateJob(jobId, {
+          status: 'error',
+          error: 'Компании не найдены. Попробуйте изменить город/отрасль или проверьте API-ключи.'
+        })
+        onComplete?.({ status: 'error', found: 0, added: 0 })
         return
       }
 
-      // Добавление новых лидов в базу (проверка на дубликаты по домену, без учёта www.)
+      // Добавление новых лидов (дедуп по домену без учёта www., защита от дублей в прогоне)
       const rootDomain = (d: string) => String(d || '').toLowerCase().replace(/^www\./, '')
-      const existingLeads = readJSON('leads_db.json')
+      const existingLeads = await db.leads.list()
       const existingDomains = new Set(existingLeads.map((l: any) => rootDomain(l.domain)))
 
       let addedCount = 0
       for (const lead of newLeads) {
         if (!existingDomains.has(rootDomain(lead.domain))) {
-          const newLead = {
+          await db.leads.create({
             ...lead,
             ...source,
             id: `lead_${Date.now()}_${addedCount}`,
@@ -414,89 +377,53 @@ function launchPipelineJob(params: {
             status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
             sector_id: undefined,
             assigned_manager_id: undefined
-          }
-          existingLeads.push(newLead)
-          existingDomains.add(rootDomain(lead.domain)) // защита от дублей внутри одного прогона
+          })
+          existingDomains.add(rootDomain(lead.domain))
           addedCount++
         }
       }
 
-      writeJSON('leads_db.json', existingLeads)
-
-      job.status = 'done'
-      job.added = addedCount
-      job.totalFound = newLeads.length
-      job.message = addedCount > 0
+      const message = addedCount > 0
         ? `Найдено ${newLeads.length}, добавлено ${addedCount} новых лидов`
         : `Найдено ${newLeads.length} компаний, все уже есть в базе`
-      console.log(`✅ Job ${jobId}: ${job.message}`)
+      await updateJob(jobId, { status: 'done', added: addedCount, totalFound: newLeads.length, message })
+      console.log(`✅ Job ${jobId}: ${message}`)
       onComplete?.({ status: 'done', found: newLeads.length, added: addedCount })
     } catch (error) {
       console.error('❌ Ошибка пайплайна:', error)
-      const job = pipelineJobs[jobId]
-      if (job) {
-        job.status = 'error'
-        job.error = 'Ошибка при запуске пайплайна: ' + String(error)
-      }
-      onComplete?.({ status: 'error', found: 0, added: 0, error: String(error) })
+      const msg = 'Ошибка при запуске пайплайна: ' + String(error)
+      await updateJob(jobId, { status: 'error', error: msg })
+      onComplete?.({ status: 'error', found: 0, added: 0, error: msg })
     }
   })()
 
   return { jobId }
 }
 
-// Быстрый разовый запуск (без сохранённой задачи)
-app.post('/api/run-pipeline', runCooldown, (req, res) => {
+app.post('/api/run-pipeline', runCooldown, async (req, res) => {
   const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
-  const launched = launchPipelineJob({ city, industry, limit })
+  const launched = await launchPipelineJob({ city, industry, limit })
   if (!launched) {
-    const running = Object.values(pipelineJobs).find(j => j.status === 'running')
-    return res.json({ jobId: running?.id, alreadyRunning: true })
+    const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
+    return res.json({ jobId: (running as any)?.id, alreadyRunning: true })
   }
   res.json({ jobId: launched.jobId })
 })
 
-app.get('/api/pipeline-status/:jobId', (req, res) => {
-  const job = pipelineJobs[req.params.jobId]
+app.get('/api/pipeline-status/:jobId', async (req, res) => {
+  const job = pipelineJobs[req.params.jobId] || await db.jobs.get(req.params.jobId)
   if (!job) return res.status(404).json({ error: 'Задача не найдена' })
   res.json(job)
 })
 
-// --- Задачи поиска (сущность "Поиск лидов"): параметры что/где/сколько + скоринг + обогащение ---
-const TASKS_FILE = 'search_tasks.json'
-
-interface SearchTask {
-  id: string
-  name: string
-  city: string
-  industry: string
-  limit: number
-  scoring?: any | null
-  use_ai?: boolean
-  use_geocode?: boolean
-  status: 'draft' | 'running' | 'done' | 'error'
-  last_run?: string | null
-  leads_found?: number
-  leads_added?: number
-  last_error?: string
-  created_at?: string
-}
-
-const getTasks = (): SearchTask[] => readJSON(TASKS_FILE)
-const saveTasks = (tasks: SearchTask[]) => writeJSON(TASKS_FILE, tasks)
-
-app.get('/api/search-tasks', (req, res) => {
-  res.json(getTasks())
-})
-
-// Валидация параметров задачи поиска. Возвращает ошибку или санитизированное тело.
+// ---------- задачи поиска ----------
 const validateTaskBody = (body: any): { error?: string; value?: any } => {
   const clean: any = {}
   const name = String(body?.name ?? '').trim()
   const city = String(body?.city ?? '').trim()
   const industry = String(body?.industry ?? '').trim()
   if (name.length < 2 || name.length > 80) return { error: 'Название задачи: 2–80 символов' }
-  for (const [label, val] of [['Город', city], ['Отрасль', industry]]) {
+  for (const [label, val] of [['Город', city], ['Отрасль', industry]] as const) {
     if (val.length < 2 || val.length > 60) return { error: `${label}: 2–60 символов` }
     if ([...val].some(c => c.codePointAt(0) === 0xfffd)) return { error: `${label}: некорректная кодировка (введите текст заново)` }
     if (!/[a-zA-Zа-яА-ЯёЁ]/.test(val)) return { error: `${label}: должны быть буквы` }
@@ -529,11 +456,14 @@ const validateTaskBody = (body: any): { error?: string; value?: any } => {
   return { value: clean }
 }
 
-app.post('/api/search-tasks', (req, res) => {
+app.get('/api/search-tasks', async (req, res) => {
+  res.json(await db.tasks.list())
+})
+
+app.post('/api/search-tasks', async (req, res) => {
   const { error, value } = validateTaskBody(req.body)
   if (error) return res.status(400).json({ error })
-  const tasks = getTasks()
-  const t: SearchTask = {
+  const task = {
     id: `task_${Date.now()}`,
     status: 'draft',
     last_run: null,
@@ -542,34 +472,28 @@ app.post('/api/search-tasks', (req, res) => {
     created_at: new Date().toISOString(),
     ...value
   }
-  tasks.push(t)
-  saveTasks(tasks)
-  res.json(t)
+  await db.tasks.create(task)
+  res.json(task)
 })
 
-app.put('/api/search-tasks/:id', (req, res) => {
+app.put('/api/search-tasks/:id', async (req, res) => {
   const { error, value } = validateTaskBody(req.body)
   if (error) return res.status(400).json({ error })
-  const tasks = getTasks()
-  const idx = tasks.findIndex((t: any) => t.id === req.params.id)
-  if (idx === -1) return res.status(404).json({ error: 'Задача не найдена' })
-  tasks[idx] = { ...tasks[idx], ...value, id: req.params.id }
-  saveTasks(tasks)
-  res.json(tasks[idx])
+  const updated = await db.tasks.update(req.params.id, value)
+  if (!updated) return res.status(404).json({ error: 'Задача не найдена' })
+  res.json(updated)
 })
 
-app.delete('/api/search-tasks/:id', (req, res) => {
-  const tasks = getTasks().filter((t: any) => t.id !== req.params.id)
-  saveTasks(tasks)
+app.delete('/api/search-tasks/:id', async (req, res) => {
+  await db.tasks.remove(req.params.id)
   res.json({ success: true })
 })
 
-app.post('/api/search-tasks/:id/run', runCooldown, (req, res) => {
-  const tasks = getTasks()
-  const task = tasks.find((t: any) => t.id === req.params.id)
+app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
+  const task = await db.tasks.get(req.params.id)
   if (!task) return res.status(404).json({ error: 'Задача не найдена' })
 
-  const launched = launchPipelineJob({
+  const launched = await launchPipelineJob({
     city: task.city,
     industry: task.industry,
     limit: task.limit,
@@ -579,37 +503,50 @@ app.post('/api/search-tasks/:id/run', runCooldown, (req, res) => {
       useGeocode: task.use_geocode !== false
     },
     source: { search_task_id: task.id, search_task_name: task.name },
-    onComplete: (result) => {
-      const current = getTasks()
-      const idx = current.findIndex((t: any) => t.id === task.id)
-      if (idx === -1) return
-      current[idx].status = result.status === 'done' ? 'done' : 'error'
-      current[idx].last_run = new Date().toISOString()
-      current[idx].leads_found = result.found
-      current[idx].leads_added = result.added
-      current[idx].last_error = result.error
-      saveTasks(current)
+    onComplete: async (result) => {
+      await db.tasks.update(task.id, {
+        status: result.status === 'done' ? 'done' : 'error',
+        last_run: new Date().toISOString(),
+        leads_found: result.found,
+        leads_added: result.added,
+        last_error: result.error
+      }).catch(() => {})
     }
   })
 
   if (!launched) {
-    const running = Object.values(pipelineJobs).find(j => j.status === 'running')
-    return res.json({ jobId: running?.id, alreadyRunning: true })
+    const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
+    return res.json({ jobId: (running as any)?.id, alreadyRunning: true })
   }
 
-  // Сразу помечаем задачу как выполняющуюся
-  const idx = tasks.findIndex((t: any) => t.id === task.id)
-  tasks[idx].status = 'running'
-  tasks[idx].last_error = undefined
-  saveTasks(tasks)
-
+  await db.tasks.update(task.id, { status: 'running', last_error: undefined })
   res.json({ jobId: launched.jobId })
 })
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Сервер запущен на порту ${PORT}`)
-})
+// ---------- boot ----------
+async function main() {
+  const mode = await initDb()
+  console.log(`💾 Режим хранения: ${mode === 'pg' ? 'PostgreSQL' : 'JSON-файлы (fallback)'}`)
 
-server.on('error', (err: any) => {
-  console.error('❌ Ошибка запуска сервера:', err)
+  // Джобы, прерванные рестартом, помечаем ошибкой
+  const stale = await db.jobs.markStaleRunningAsError()
+  if (stale) console.log(`⚠️ Прервано рестартом: ${stale} задач пайплайна`)
+
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Сервер запущен на порту ${PORT}`)
+  })
+  server.on('error', (err: any) => console.error('❌ Ошибка запуска сервера:', err))
+
+  const shutdown = async () => {
+    console.log('🛑 Остановка...')
+    await closeDb()
+    process.exit(0)
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+}
+
+main().catch(err => {
+  console.error('❌ Фатальная ошибка при старте:', err)
+  process.exit(1)
 })

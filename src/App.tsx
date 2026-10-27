@@ -6,7 +6,7 @@ import {
   Settings2, RefreshCw, Plus,
 } from 'lucide-react'
 
-import { API_URL, createApiFetch } from './lib/api'
+import { API_URL, createApiFetch, setToken, getToken } from './lib/api'
 import { Lead, SearchTask, PipelineJob, Toast, STATUS_META, TIER_META, SIZE_LABELS, SCORING_FIELDS } from './lib/types'
 import Sidebar, { TabId } from './components/Sidebar'
 import Drawer, { CenterModal } from './components/Drawer'
@@ -63,10 +63,51 @@ export default function App() {
   const [supplierDraft, setSupplierDraft] = useState<any>(supplier)
   const [supplierOpen, setSupplierOpen] = useState(false)
 
-  const [authRequired, setAuthRequired] = useState(false)
-  const [tokenInput, setTokenInput] = useState('')
+  const [authRequired, setAuthRequired] = useState(() => typeof window !== 'undefined' && !getToken())
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginBusy, setLoginBusy] = useState(false)
+  const [user, setUser] = useState<any>(() => {
+    if (typeof window === 'undefined') return null
+    try { return JSON.parse(localStorage.getItem('auth_user') || 'null') } catch { return null }
+  })
 
   const apiFetch = useMemo(() => createApiFetch(() => setAuthRequired(true)), [])
+
+  const handleLogin = async () => {
+    if (!loginEmail.trim() || !loginPassword) return
+    setLoginBusy(true)
+    try {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail.trim().toLowerCase(), password: loginPassword })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast(data.error || 'Неверный email или пароль', 'error')
+        return
+      }
+      setToken(data.token)
+      setUser(data.user)
+      localStorage.setItem('auth_user', JSON.stringify(data.user))
+      setAuthRequired(false)
+      setLoginPassword('')
+      toast(`Добро пожаловать, ${data.user.name || data.user.email}`, 'success')
+      loadData(); loadTasks(); loadSupplierConfig(); loadScoringConfig()
+    } catch {
+      toast('Ошибка соединения с сервером', 'error')
+    } finally {
+      setLoginBusy(false)
+    }
+  }
+
+  const handleLogout = () => {
+    setToken('')
+    setUser(null)
+    localStorage.removeItem('auth_user')
+    setAuthRequired(true)
+  }
 
   // ---------- toast ----------
   const dismissToast = useCallback((id: number) => setToasts(t => t.filter(x => x.id !== id)), [])
@@ -367,13 +408,6 @@ export default function App() {
     } catch { toast('Сохранено локально, но сервер недоступен', 'error') }
   }
 
-  const handleSaveToken = () => {
-    if (!tokenInput.trim()) return
-    localStorage.setItem('api_token', tokenInput.trim())
-    setAuthRequired(false); setTokenInput('')
-    loadData(); loadTasks()
-  }
-
   // ---------- фильтр ----------
   const filteredLeads = useMemo(() => leads.filter(l => {
     if (statusFilter !== 'all' && l.status !== statusFilter) return false
@@ -421,6 +455,16 @@ export default function App() {
             <Briefcase size={14} />
             <span className="max-w-[220px] truncate">Поставщик: {supplier.name}</span>
           </button>
+          {user && (
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500/30 to-violet-500/30 border border-indigo-500/25 flex items-center justify-center text-[11px] font-bold text-indigo-200" title={user.email}>
+                {(user.name || user.email || '?').trim().split(/\s+/).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase()}
+              </div>
+              <button onClick={handleLogout} className="btn-ghost !py-2 !px-3 text-[12px]" title="Выйти">
+                Выйти
+              </button>
+            </div>
+          )}
         </div>
 
         {activeTab === 'search' && (
@@ -762,25 +806,37 @@ export default function App() {
         </div>
       </CenterModal>
 
-      {/* Авторизация по ключу */}
+      {/* Авторизация */}
       {authRequired && (
         <div className="fixed inset-0 z-[3000] bg-black/85 backdrop-blur flex items-center justify-center p-4">
           <div className="card w-full max-w-sm p-7 animate-fade-up">
             <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 flex items-center justify-center mb-4">
               <KeyRound size={22} className="text-indigo-300" />
             </div>
-            <h2 className="text-lg font-extrabold text-white">Требуется ключ доступа</h2>
-            <p className="text-[13px] text-slate-500 mt-1.5 mb-5">Сервер защищён ключом API. Введите его — ключ сохранится в этом браузере.</p>
-            <input
-              type="password"
-              value={tokenInput}
-              onChange={e => setTokenInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSaveToken() }}
-              placeholder="Ключ доступа"
-              className="input mb-4"
-              autoFocus
-            />
-            <button onClick={handleSaveToken} className="btn-primary w-full">Войти</button>
+            <h2 className="text-lg font-extrabold text-white">Вход в систему</h2>
+            <p className="text-[13px] text-slate-500 mt-1.5 mb-5">Введите email и пароль вашей учётной записи</p>
+            <div className="space-y-3">
+              <input
+                type="email"
+                value={loginEmail}
+                onChange={e => setLoginEmail(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleLogin() }}
+                placeholder="Email"
+                className="input"
+                autoFocus
+              />
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={e => setLoginPassword(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleLogin() }}
+                placeholder="Пароль"
+                className="input"
+              />
+              <button onClick={handleLogin} disabled={loginBusy} className="btn-primary w-full">
+                {loginBusy ? 'Вход...' : 'Войти'}
+              </button>
+            </div>
           </div>
         </div>
       )}

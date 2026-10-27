@@ -44,6 +44,7 @@ interface PipelineOptions {
   scoring?: Partial<ScoringConfig> | null
   useAI?: boolean
   useGeocode?: boolean
+  onKP?: (filename: string, content: string) => void | Promise<void>
 }
 
 const DEFAULT_SCORING: ScoringConfig = {
@@ -523,7 +524,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
 }
 
 // --- Этап 3: Генерация КП через Gemini (сохраняем как HTML) ---
-export async function generateKP(lead: LeadData, supplierName: string) {
+export async function generateKP(lead: LeadData, supplierName: string, hooks?: { onKP?: (filename: string, content: string) => void | Promise<void> }) {
   console.log(`📝 Генерация КП для ${lead.company_name}...`)
 
   try {
@@ -577,13 +578,17 @@ ${productsBlock}
     }
 
     const fileName = `${lead.company_name.replace(/[^a-z0-9а-яё]/gi, '_')}.html`
-    const filePath = path.join(rootDir, 'kp_final', fileName)
-
-    if (!fs.existsSync(path.join(rootDir, 'kp_final'))) {
-      fs.mkdirSync(path.join(rootDir, 'kp_final'))
+    // Локальная копия (fallback-режим без БД) + колбэк для сохранения в БД
+    try {
+      const filePath = path.join(rootDir, 'kp_final', fileName)
+      if (!fs.existsSync(path.join(rootDir, 'kp_final'))) {
+        fs.mkdirSync(path.join(rootDir, 'kp_final'))
+      }
+      fs.writeFileSync(filePath, kpText, 'utf-8')
+    } catch { /* локальная копия не критична */ }
+    if (hooks?.onKP) {
+      try { await hooks.onKP(fileName, kpText) } catch (e) { console.error('⚠️ Не удалось сохранить КП в БД:', e) }
     }
-
-    fs.writeFileSync(filePath, kpText, 'utf-8')
     console.log(`✅ КП сохранено: ${fileName}`)
     return fileName
   } catch (error) {
@@ -613,7 +618,7 @@ export async function runPipeline(
   }
   for (let i = 0; i < leads.length; i++) {
     onProgress?.('kp', i, leads.length)
-    const kpFile = await generateKP(leads[i], supplierName)
+    const kpFile = await generateKP(leads[i], supplierName, { onKP: options?.onKP })
     if (kpFile) (leads[i] as any).pdf_file = kpFile
   }
   saveGeocodeCache()

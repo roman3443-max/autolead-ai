@@ -1,9 +1,15 @@
 export const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001'
 
 export const getToken = () =>
-  typeof window !== 'undefined' ? localStorage.getItem('api_token') || '' : ''
+  typeof window !== 'undefined' ? localStorage.getItem('auth_token') || '' : ''
 
-// fetch-обёртка: подставляет токен, при 401 вызывает колбэк авторизации
+export const setToken = (token: string) => {
+  if (typeof window === 'undefined') return
+  if (token) localStorage.setItem('auth_token', token)
+  else localStorage.removeItem('auth_token')
+}
+
+// fetch-обёртка: Bearer JWT, при 401 вызывает колбэк авторизации
 export const createApiFetch = (onUnauthorized: () => void) =>
   async function apiFetch(url: string, options: RequestInit = {}) {
     const token = getToken()
@@ -11,7 +17,7 @@ export const createApiFetch = (onUnauthorized: () => void) =>
       ...options,
       headers: {
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { 'x-api-token': token } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options.headers || {})
       }
     })
