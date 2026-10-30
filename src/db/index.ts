@@ -4,6 +4,18 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
+// Загружаем .env независимо от точки входа (скрипты, тесты, сервер)
+const envPath = path.join(process.cwd(), '.env')
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf-8').split('\n').forEach(line => {
+    const eq = line.indexOf('=')
+    if (eq > 0 && !line.trim().startsWith('#')) {
+      const key = line.slice(0, eq).trim()
+      if (!process.env[key]) process.env[key] = line.slice(eq + 1).trim()
+    }
+  })
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = process.cwd()
 const SCHEMA = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8')
@@ -48,8 +60,22 @@ export async function initDb(): Promise<'pg' | 'json'> {
 
   if (url) {
     const { Pool } = await import('pg')
-    pgPool = new Pool({ connectionString: url, ssl: url.includes('supabase') ? { rejectUnauthorized: false } : undefined })
-    exec = async (sql, params) => (await pgPool.query(sql, params)).rows
+    pgPool = new Pool({
+      connectionString: url,
+      ssl: url.includes('supabase') ? { rejectUnauthorized: false } : undefined,
+      keepAlive: true
+    })
+    const RETRYABLE = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EPIPE']
+    exec = async (sql, params) => {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          return (await pgPool.query(sql, params)).rows
+        } catch (e: any) {
+          if (!RETRYABLE.includes(e?.code) || attempt === 4) throw e
+        }
+      }
+      return []
+    }
     await exec(SCHEMA)
     mode = 'pg'
     await seedFromJsonIfEmpty()
@@ -71,40 +97,34 @@ export async function closeDb() {
 }
 
 // ---------- seed ----------
+// Все вставки — идемпотентные (ON CONFLICT), поэтому сид можно безопасно
+// запускать при каждом старте: дорисует недостающее после обрывов/рестартов.
 async function seedFromJsonIfEmpty() {
-  const leadRows = await exec!('SELECT COUNT(*)::int AS n FROM leads')
-  if (leadRows[0].n === 0 && fs.existsSync(path.join(rootDir, 'leads_db.json'))) {
+  if (fs.existsSync(path.join(rootDir, 'leads_db.json'))) {
     const leads = jsonStore.read('leads_db.json', [])
     for (const l of leads) await insertLead(l)
-    console.log(`🌱 Импортировано ${leads.length} лидов из leads_db.json`)
   }
-  const taskRows = await exec!('SELECT COUNT(*)::int AS n FROM search_tasks')
-  if (taskRows[0].n === 0 && fs.existsSync(path.join(rootDir, 'search_tasks.json'))) {
+  if (fs.existsSync(path.join(rootDir, 'search_tasks.json'))) {
     const tasks = jsonStore.read('search_tasks.json', [])
     for (const t of tasks) await insertTask(t)
-    console.log(`🌱 Импортировано ${tasks.length} задач из search_tasks.json`)
   }
-  const mgrRows = await exec!('SELECT COUNT(*)::int AS n FROM managers')
-  if (mgrRows[0].n === 0 && fs.existsSync(path.join(rootDir, 'managers.json'))) {
+  if (fs.existsSync(path.join(rootDir, 'managers.json'))) {
     const m = jsonStore.read('managers.json', [])
     for (const x of m) await exec!('INSERT INTO managers (id, data) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING', [x.id, JSON.stringify(x)])
   }
-  const secRows = await exec!('SELECT COUNT(*)::int AS n FROM sectors')
-  if (secRows[0].n === 0 && fs.existsSync(path.join(rootDir, 'sectors.json'))) {
+  if (fs.existsSync(path.join(rootDir, 'sectors.json'))) {
     const s = jsonStore.read('sectors.json', [])
     for (const x of s) await exec!('INSERT INTO sectors (id, data) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING', [x.id, JSON.stringify(x)])
   }
   for (const key of ['supplier_config', 'scoring_config']) {
     const f = `${key}.json`
-    const rows = await exec!('SELECT COUNT(*)::int AS n FROM settings WHERE key = $1', [key])
-    if (rows[0].n === 0 && fs.existsSync(path.join(rootDir, f))) {
+    if (fs.existsSync(path.join(rootDir, f))) {
       await exec!('INSERT INTO settings (key, data) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING', [key, JSON.stringify(jsonStore.read(f, {}))])
     }
   }
   // КП-файлы из kp_final
-  const kpRows = await exec!('SELECT COUNT(*)::int AS n FROM kp_files')
   const kpDir = path.join(rootDir, 'kp_final')
-  if (kpRows[0].n === 0 && fs.existsSync(kpDir)) {
+  if (fs.existsSync(kpDir)) {
     let n = 0
     for (const f of fs.readdirSync(kpDir).filter(f => f.endsWith('.html'))) {
       const leads = await exec!('SELECT id FROM leads WHERE data->>\'pdf_file\' = $1 LIMIT 1', [f])
@@ -112,7 +132,6 @@ async function seedFromJsonIfEmpty() {
         [f, leads[0]?.id || null, fs.readFileSync(path.join(kpDir, f), 'utf-8')])
       n++
     }
-    if (n) console.log(`🌱 Импортировано ${n} КП из kp_final/`)
   }
 }
 
