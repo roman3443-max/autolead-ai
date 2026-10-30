@@ -41,6 +41,16 @@ const jsonStore = {
 }
 
 // ---------- init ----------
+// Схему выполняем по одному выражению: идемпотентно и устойчиво к обрывам/пулерам
+const SCHEMA_CLEAN = SCHEMA.split('\n').filter(l => !l.trim().startsWith('--')).join('\n')
+const SCHEMA_STATEMENTS = SCHEMA_CLEAN.split(';').map(s => s.trim()).filter(Boolean)
+
+async function runSchema() {
+  for (const stmt of SCHEMA_STATEMENTS) {
+    await exec!(stmt)
+  }
+}
+
 export async function initDb(): Promise<'pg' | 'json'> {
   const url = process.env.DATABASE_URL || ''
 
@@ -51,7 +61,7 @@ export async function initDb(): Promise<'pg' | 'json'> {
     pgClient = new adapter.Client()
     await pgClient.connect()
     exec = async (sql, params) => (await pgClient.query(sql, params)).rows
-    await exec(SCHEMA)
+    await runSchema()
     mode = 'pg'
     await seedFromJsonIfEmpty()
     await seedAdminIfEmpty()
@@ -76,7 +86,7 @@ export async function initDb(): Promise<'pg' | 'json'> {
       }
       return []
     }
-    await exec(SCHEMA)
+    await runSchema()
     mode = 'pg'
     await seedFromJsonIfEmpty()
     await seedAdminIfEmpty()

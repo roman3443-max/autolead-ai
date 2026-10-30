@@ -59,6 +59,18 @@ const kpFileName = (fileName: any): string | null => {
 }
 
 // ---------- auth ----------
+app.get('/api/health', async (req, res) => {
+  let counts: any = null
+  try {
+    counts = {
+      leads: (await db.leads.list()).length,
+      tasks: (await db.tasks.list()).length,
+      users: (await db.users.list()).length
+    }
+  } catch { /* ignore */ }
+  res.json({ ok: true, mode: dbMode(), counts })
+})
+
 app.post('/api/auth/login', loginHandler)
 app.get('/api/auth/me', authMiddleware, (req: any, res) => res.json(req.user))
 app.use('/api', authMiddleware)
@@ -527,6 +539,10 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
 async function main() {
   const mode = await initDb()
   console.log(`💾 Режим хранения: ${mode === 'pg' ? 'PostgreSQL' : 'JSON-файлы (fallback)'}`)
+  try {
+    const counts = { leads: (await db.leads.list()).length, tasks: (await db.tasks.list()).length, users: (await db.users.list()).length }
+    console.log(`📊 В базе: лидов ${counts.leads}, задач ${counts.tasks}, пользователей ${counts.users}`)
+  } catch { /* ignore */ }
 
   // Джобы, прерванные рестартом, помечаем ошибкой
   const stale = await db.jobs.markStaleRunningAsError()
