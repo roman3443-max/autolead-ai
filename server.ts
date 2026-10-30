@@ -68,7 +68,9 @@ app.get('/api/health', async (req, res) => {
       users: (await db.users.list()).length
     }
   } catch { /* ignore */ }
-  res.json({ ok: true, mode: dbMode(), counts })
+  let dbHost: string | null = null
+  try { dbHost = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null } catch { dbHost = 'invalid-url' }
+  res.json({ ok: true, mode: dbMode(), counts, hasDatabaseUrl: Boolean(process.env.DATABASE_URL), dbHost })
 })
 
 app.post('/api/auth/login', loginHandler)
