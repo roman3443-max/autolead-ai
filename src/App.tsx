@@ -443,6 +443,25 @@ export default function App() {
     } catch { toast('Ошибка скачивания КП', 'error') }
   }
 
+  const requestLeadImport = async (rows: any[], sourceName: string, dryRun: boolean) => {
+    const res = await apiFetch(`${API_URL}/api/leads/import`, {
+      method: 'POST',
+      body: JSON.stringify({ leads: rows, sourceName, dryRun })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Не удалось обработать импорт')
+    return data
+  }
+
+  const handlePreviewImport = (rows: any[], sourceName: string) => requestLeadImport(rows, sourceName, true)
+
+  const handleCommitImport = async (rows: any[], sourceName: string) => {
+    const result = await requestLeadImport(rows, sourceName, false)
+    await loadData()
+    toast(`Импортировано ${result.imported} лидов; пропущено дублей: ${result.duplicates}.`, 'success')
+    return result
+  }
+
   const handleExportCSV = async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/leads/export`)
@@ -538,6 +557,7 @@ export default function App() {
       l.company_name.toLowerCase().includes(q) ||
       l.domain.toLowerCase().includes(q) ||
       (l.city || '').toLowerCase().includes(q) ||
+      (l.industry || '').toLowerCase().includes(q) ||
       (l.address || '').toLowerCase().includes(q) ||
       (l.lpr || []).some(p => `${p.name} ${p.position}`.toLowerCase().includes(q)) ||
       (l.lpr_emails || []).some(e => e.toLowerCase().includes(q)) ||
@@ -614,6 +634,8 @@ export default function App() {
             onCopyLetter={handleCopyLetter}
             onDownloadPDF={handleDownloadPDF}
             onExportCSV={handleExportCSV}
+            onPreviewImport={handlePreviewImport}
+            onCommitImport={handleCommitImport}
             onStatusChange={handleStatusChange}
           />
         )}
