@@ -123,8 +123,7 @@ app.post('/api/leads/geocode-missing', async (req, res) => {
       })
       geocoded++
     }
-    const remaining = allLeads.filter((lead: any) => ids.has(String(lead.id)) && !lead.coordinates && !candidates.some((candidate: any) => candidate.id === lead.id)).length + failed
-    res.json({ requested: ids.size, processed: candidates.length, geocoded, failed, remaining })
+    res.json({ requested: ids.size, processed: candidates.length, geocoded, failed, remaining: failed })
   } catch (error) {
     console.error('❌ Ошибка геокодирования лидов:', error)
     res.status(500).json({ error: 'Не удалось найти координаты для выбранных лидов' })
