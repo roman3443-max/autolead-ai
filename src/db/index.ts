@@ -145,15 +145,23 @@ async function seedFromJsonIfEmpty() {
   }
 }
 
+function requireAdminBootstrapCredentials(): { email: string; password: string } {
+  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase() || ''
+  const password = process.env.ADMIN_PASSWORD || ''
+  if (!email || !password || password.length < 12) {
+    throw new Error('Для первого запуска задайте ADMIN_EMAIL и ADMIN_PASSWORD (не менее 12 символов).')
+  }
+  return { email, password }
+}
+
 async function seedAdminIfEmpty() {
   const rows = await exec!('SELECT COUNT(*)::int AS n FROM users')
   if (rows[0].n === 0) {
-    const email = process.env.ADMIN_EMAIL || 'admin@leadpipeline.local'
-    const password = process.env.ADMIN_PASSWORD || 'admin123'
+    const { email, password } = requireAdminBootstrapCredentials()
     const bcrypt = await import('bcryptjs')
     const hash = await bcrypt.hash(password, 10)
     await exec!('INSERT INTO users (email, name, password_hash, role) VALUES ($1, $2, $3, $4)', [email, 'Администратор', hash, 'admin'])
-    console.log(`👤 Создан аккаунт администратора: ${email} (пароль по умолчанию — смените через ADMIN_EMAIL/ADMIN_PASSWORD)`)
+    console.log(`👤 Создан аккаунт администратора: ${email}`)
   }
 }
 
@@ -164,13 +172,12 @@ async function seedUsersJsonIfEmpty() {
     try { users = JSON.parse(fs.readFileSync(p, 'utf-8')) } catch { users = [] }
   }
   if (users.length === 0) {
-    const email = process.env.ADMIN_EMAIL || 'admin@leadpipeline.local'
-    const password = process.env.ADMIN_PASSWORD || 'admin123'
+    const { email, password } = requireAdminBootstrapCredentials()
     const bcrypt = await import('bcryptjs')
     const password_hash = await bcrypt.hash(password, 10)
     users = [{ email, name: 'Администратор', password_hash, role: 'admin' }]
     jsonStore.write('users.json', users)
-    console.log(`👤 Создан аккаунт администратора: ${email} (пароль по умолчанию — задайте ADMIN_PASSWORD)`)
+    console.log(`👤 Создан аккаунт администратора: ${email}`)
   }
 }
 
