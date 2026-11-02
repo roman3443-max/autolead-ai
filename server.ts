@@ -221,7 +221,9 @@ app.post('/api/leads/import', async (req, res) => {
       if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier })
       if (!dryRun) {
         const id = `lead_import_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`
-        await db.leads.create({ ...scored, id })
+        const importedLead = { ...scored, id }
+        await db.leads.create(importedLead)
+        await assignLeadToKnownSector(importedLead)
         imported++
       }
       keys.forEach(key => knownKeys.add(key))
@@ -707,7 +709,7 @@ async function launchPipelineJob(params: {
       for (const [index, lead] of newLeads.entries()) {
         const dedupeKeys = getLeadDedupeKeys(lead)
         if (!dedupeKeys.some(key => knownLeadKeys.has(key))) {
-          await db.leads.create({
+          const savedLead = {
             ...lead,
             ...source,
             id: `lead_${Date.now()}_${addedCount}`,
@@ -717,7 +719,9 @@ async function launchPipelineJob(params: {
             status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
             sector_id: undefined,
             assigned_manager_id: undefined
-          })
+          }
+          await db.leads.create(savedLead)
+          await assignLeadToKnownSector(savedLead)
           dedupeKeys.forEach(key => knownLeadKeys.add(key))
           addedCount++
         }
