@@ -44,7 +44,7 @@ export default function MapPage({ leads, sectors, managers }: Props) {
             <MapIcon size={18} className="text-indigo-400" /> Карта лидов и секторов
           </h1>
           <p className="text-[13px] text-slate-500 mt-0.5">
-            {sectors.length} секторов · {withCoords.length} лидов с координатами из Nominatim · {withoutGeocoding} без подтверждённого геокодирования
+            {sectors.length} секторов · {withCoords.length} лидов с координатами из Nominatim · {withoutGeocoding} без результата геокодирования
           </p>
         </div>
       </div>
