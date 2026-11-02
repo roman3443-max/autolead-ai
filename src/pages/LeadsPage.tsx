@@ -167,7 +167,7 @@ export default function LeadsPage(p: Props) {
             </button>
             <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={e => void handleImportFile(e.target.files?.[0])} className="hidden" />
             <button onClick={() => {
-              const csv = '\uFEFFКомпания;Сайт;Город;Вид деятельности;Адрес;Телефон;Email;Бренды;ЛПР;Должность;Широта;Долгота\\r\\nАвтоСервис;example.ru;Екатеринбург;СТО;Ленина 1;+7 900 000-00-00;info@example.ru;Bosch;Иван Иванов;Директор;56.838;60.597'
+              const csv = '\uFEFFКомпания;Сайт;Город;Вид деятельности;Адрес;Телефон;Email;Бренды;ЛПР;Должность;Широта;Долгота\r\nАвтоСервис;example.ru;Екатеринбург;СТО;Ленина 1;+7 900 000-00-00;info@example.ru;Bosch;Иван Иванов;Директор;56.838;60.597'
               const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
               const a = document.createElement('a'); a.href = url; a.download = 'шаблон_импорта_лидов.csv'
               document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
@@ -307,6 +307,7 @@ export default function LeadsPage(p: Props) {
         )}
       </div>
       <CenterModal open={Boolean(importPreview) || Boolean(importError)} onClose={() => { if (!importBusy) { setImportPreview(null); setImportError('') } }} title="Импорт внешних лидов" width="max-w-2xl">
+        {importError && !importPreview && <div className="text-sm text-rose-300">{importError}</div>}
         {importPreview && (
           <div className="space-y-4">
             <p className="text-sm text-slate-400">Файл: <span className="text-slate-200">{importSource}</span>. Импортируем с пересчётом скоринга и проверкой дублей.</p>
