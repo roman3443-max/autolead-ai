@@ -406,8 +406,11 @@ export default function App() {
     }
     const brands = [...new Set(String(leadEditDraft.brands || '').split(/[;,|\n]/).map((value: string) => value.trim()).filter(Boolean))]
     const lprName = String(leadEditDraft.lprName || '').trim()
+    const lprPosition = String(leadEditDraft.lprPosition || '').trim()
+    const previousLpr = selectedLead.lpr?.[0]
+    const sameLpr = previousLpr?.name === lprName && previousLpr?.position === lprPosition
     const lpr = lprName
-      ? [{ ...(selectedLead.lpr?.[0] || {}), name: lprName, position: String(leadEditDraft.lprPosition || '').trim(), evidence: '' }, ...(selectedLead.lpr || []).slice(1)]
+      ? [{ ...(previousLpr || {}), name: lprName, position: lprPosition, evidence: sameLpr ? previousLpr?.evidence || '' : '' }, ...(selectedLead.lpr || []).slice(1)]
       : (selectedLead.lpr || []).slice(1)
     const emailSource = JSON.stringify(emails) === JSON.stringify(selectedLead.lpr_emails || [])
       ? selectedLead.email_source
