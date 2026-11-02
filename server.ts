@@ -568,6 +568,15 @@ async function main() {
   const stale = await db.jobs.markStaleRunningAsError()
   if (stale) console.log(`⚠️ Прервано рестартом: ${stale} задач пайплайна`)
 
+  const staleJobSweep = setInterval(async () => {
+    try {
+      const recovered = await db.jobs.markStaleRunningAsError()
+      if (recovered) console.log(`⚠️ Помечено прерванными после истечения lease: ${recovered} задач`)
+    } catch (error) {
+      console.error('⚠️ Не удалось проверить зависшие задачи:', error)
+    }
+  }, 60_000)
+
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Сервер запущен на порту ${PORT}`)
   })
@@ -575,6 +584,7 @@ async function main() {
 
   const shutdown = async () => {
     console.log('🛑 Остановка...')
+    clearInterval(staleJobSweep)
     const active = Object.values(pipelineJobs).find((job: any) => job.status === 'running') as any
     if (active) {
       await updateJob(active.id, { status: 'error', error: 'Сервер остановлен во время выполнения задачи' })
