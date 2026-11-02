@@ -116,6 +116,7 @@ app.post('/api/leads/import', async (req, res) => {
     const duplicatePreview: any[] = []
     const invalidRows: any[] = []
     let imported = 0
+    let importable = 0
     let duplicates = 0
 
     for (const [index, raw] of rows.entries()) {
@@ -154,6 +155,7 @@ app.post('/api/leads/import', async (req, res) => {
         continue
       }
       const scored = rescoreLead(lead, scoring, catalog)
+      importable++
       if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier })
       if (!dryRun) {
         const id = `lead_import_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`
@@ -162,7 +164,7 @@ app.post('/api/leads/import', async (req, res) => {
       }
       keys.forEach(key => knownKeys.add(key))
     }
-    res.json({ dryRun, total: rows.length, importable: newPreview.length, imported, duplicates, invalid: invalidRows.length, newPreview, duplicatePreview, invalidRows })
+    res.json({ dryRun, total: rows.length, importable, imported, duplicates, invalid: invalidRows.length, newPreview, duplicatePreview, invalidRows })
   } catch (error) {
     console.error('❌ Ошибка импорта лидов:', error)
     res.status(500).json({ error: 'Не удалось обработать файл импорта' })
