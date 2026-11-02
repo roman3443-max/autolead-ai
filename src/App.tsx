@@ -482,6 +482,15 @@ export default function App() {
   }
 
   // ---------- поставщик ----------
+  const downloadCatalogTemplate = () => {
+    const content = '\uFEFFbrand;sku;name;car;price;stock\r\nBosch;BO-123;Фильтр воздушный;LADA Granta;420;25\r\n'
+    const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'supplier_offer_template.csv'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
   const handleCatalogUpload = async (event: any) => {
     const file = event.target.files?.[0] as File | undefined
     if (!file) return
@@ -949,10 +958,15 @@ export default function App() {
               <div className="font-semibold text-sm text-slate-200">Предложение по брендам и товарам</div>
               <div className="text-xs text-slate-500 mt-1">CSV или JSON. Для CSV нужны колонки: brand, name, price; sku, car и stock — дополнительные.</div>
             </div>
-            <label className="btn-ghost !py-2 text-[13px] w-fit cursor-pointer">
-              <Upload size={14} /> Загрузить CSV / JSON
-              <input type="file" accept=".csv,.json,text/csv,application/json" onChange={handleCatalogUpload} className="hidden" />
-            </label>
+            <div className="flex flex-wrap gap-2">
+              <label className="btn-ghost !py-2 text-[13px] w-fit cursor-pointer">
+                <Upload size={14} /> Загрузить CSV / JSON
+                <input type="file" accept=".csv,.json,text/csv,application/json" onChange={handleCatalogUpload} className="hidden" />
+              </label>
+              <button onClick={downloadCatalogTemplate} className="btn-ghost !py-2 text-[13px]">
+                <FileDown size={14} /> Скачать шаблон CSV
+              </button>
+            </div>
             <div className="text-xs text-slate-400">Позиции: {(supplierDraft.catalogItems || []).length} · Бренды: {[...new Set((supplierDraft.catalogItems || []).map((item: any) => item.brand).filter(Boolean))].join(', ') || 'не загружены'}</div>
           </div>
           <div className="flex justify-end gap-2.5 pt-1">
