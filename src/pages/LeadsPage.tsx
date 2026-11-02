@@ -130,10 +130,11 @@ export default function LeadsPage(p: Props) {
     clients: p.leads.filter(l => l.status === 'converted').length,
   }
   const pipelineStages = [
-    { status: 'new', step: 'Этап 1', action: 'Проверить профиль и выбрать следующий шаг' },
-    { status: 'in_progress', step: 'Этап 2', action: 'Связаться с компанией и вести диалог' },
-    { status: 'contacted', step: 'Этап 3', action: 'КП отправлено · дождаться ответа' },
-    { status: 'converted', step: 'Этап 4', action: 'Клиент · сделка завершена' },
+    { status: 'new', step: 'Этап 1', action: 'Проверить профиль компании' },
+    { status: 'in_progress', step: 'Этап 2', action: 'Начать работу и выбрать предложение' },
+    { status: 'proposal_ready', step: 'Этап 3', action: 'КП сформировано · проверить и отправить' },
+    { status: 'contacted', step: 'Этап 4', action: 'КП отправлено · дождаться ответа' },
+    { status: 'converted', step: 'Этап 5', action: 'Клиент · сделка завершена' },
   ].map(stage => ({ ...stage, label: STATUS_META[stage.status].label, count: p.leads.filter(lead => lead.status === stage.status).length }))
   const excludedCounts = {
     not_target: p.leads.filter(lead => lead.status === 'not_target').length,
@@ -165,7 +166,7 @@ export default function LeadsPage(p: Props) {
             <span className="text-xs text-slate-500">Вне основной воронки: {excludedCounts.not_target + excludedCounts.blacklisted}</span>
           )}
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
           {pipelineStages.map((stage, index) => {
             const active = p.statusFilter === stage.status
             return (
