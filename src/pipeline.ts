@@ -44,7 +44,7 @@ interface PipelineOptions {
   scoring?: Partial<ScoringConfig> | null
   useAI?: boolean
   useGeocode?: boolean
-  onKP?: (filename: string, content: string) => void | Promise<void>
+  supplierCatalog?: SupplierCatalog
 }
 
 const DEFAULT_SCORING: ScoringConfig = {
@@ -101,8 +101,8 @@ interface SupplierCatalog {
   items: CatalogItem[]
 }
 
-function loadCatalog(): SupplierCatalog {
-  const catalog = readJSONFile('supplier_catalog.json', { items: [] })
+export function loadCatalog(override?: SupplierCatalog): SupplierCatalog {
+  const catalog = override || readJSONFile('supplier_catalog.json', { items: [] })
   if (!catalog.items || catalog.items.length === 0) {
     console.log('⚠️ supplier_catalog.json пуст — КП будут без таблицы товаров')
   } else {
@@ -111,16 +111,19 @@ function loadCatalog(): SupplierCatalog {
   return catalog
 }
 
-function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems = 10): CatalogItem[] {
-  if (!catalog.items.length) return []
-  const brandSet = brands.map(b => b.toLowerCase())
-  const matched = catalog.items.filter(item =>
-    brandSet.some(b => item.brand.toLowerCase().includes(b) || b.includes(item.brand.toLowerCase()))
-  )
-  const pool = matched.length >= 4 ? matched : [...matched, ...catalog.items.filter(i => !matched.includes(i))]
-  return pool.slice(0, maxItems)
+function normalizeBrand(value: string): string {
+  return String(value || '').trim().toLocaleLowerCase('ru-RU').replace(/ё/g, 'е')
 }
 
+function getMatchedBrands(brands: string[], catalog: SupplierCatalog): string[] {
+  const offered = new Set((catalog.items || []).map(item => normalizeBrand(item.brand)).filter(Boolean))
+  return [...new Set(brands.filter(brand => offered.has(normalizeBrand(brand))))]
+}
+
+function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems = 10): CatalogItem[] {
+  const matched = new Set(getMatchedBrands(brands, catalog).map(normalizeBrand))
+  return (catalog.items || []).filter(item => matched.has(normalizeBrand(item.brand))).slice(0, maxItems)
+}
 function buildProductsTable(items: CatalogItem[]): string {
   if (!items.length) return ''
   const rows = items
@@ -167,6 +170,7 @@ interface LeadData {
   wholesale?: boolean
   reason?: string
   matched_skus?: CatalogItem[]
+  matched_brands?: string[]
 }
 
 // --- Геокодинг (Nominatim) с кэшем ---
@@ -371,13 +375,15 @@ function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {
 
 // Пересчёт скоринга существующих лидов текущей моделью (для старых записей
 // с устаревшим скором и для смены scoring_config)
-export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null): any {
+export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null, catalogOverride?: SupplierCatalog): any {
   const cfg = loadScoringConfig(overrides)
+  const catalog = loadCatalog(catalogOverride)
+  const matched_brands = getMatchedBrands(Array.isArray(lead.brands) ? lead.brands : [], catalog)
   const size = ['small', 'medium', 'large'].includes(lead.business_size) ? lead.business_size : 'unknown'
   const score = calculateLeadScore(cfg, {
     lprCount: Array.isArray(lead.lpr) ? lead.lpr.length : 0,
     emailsCount: lead.email_source === 'website' && Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
-    brandsCount: Array.isArray(lead.brands) ? lead.brands.length : 0,
+    brandsCount: matched_brands.length,
     businessSize: size,
     wholesale: Boolean(lead.wholesale),
     contentLength: 0 // у старых лидов нет исходного текста сайта — не учитываем
@@ -385,7 +391,7 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
   // Контент не сохраняем у лидов, поэтому чтобы не занижать всех старых записей,
   // даём половину веса контента по умолчанию
   const withContentFallback = Math.min(100, score + Math.round(cfg.weights.content / 2))
-  return { ...lead, lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
+  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
 }
 
 // --- Этап 1: Поиск компаний через Tavily ---
@@ -435,7 +441,7 @@ export async function searchCompanies(city: string, industry: string, limit: num
 export async function enrichCompanyData(companies: any[], city: string, onProgress?: (processed: number, total: number) => void, options?: PipelineOptions) {
   console.log('🕷️ Обогащение данных...')
   const scoringCfg = loadScoringConfig(options?.scoring)
-  const catalog = loadCatalog()
+  const catalog = loadCatalog(options?.supplierCatalog)
   const useAI = options?.useAI ?? true
   const enrichedLeads: LeadData[] = []
 
@@ -467,11 +473,12 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const email_source = siteEmails.length > 0 ? 'website' : 'none'
 
       const brands = extractBrands(content)
+      const matched_brands = getMatchedBrands(brands, catalog)
       const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true)
       const lead_score = calculateLeadScore(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
-        brandsCount: brands.length,
+        brandsCount: matched_brands.length,
         businessSize,
         wholesale,
         contentLength: content.length
@@ -490,6 +497,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         lpr_emails,
         email_source,
         brands,
+        matched_brands,
         lead_score,
         lead_tier,
         business_size: businessSize,
@@ -510,79 +518,53 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
 }
 
 // --- Этап 3: Генерация КП через Gemini (сохраняем как HTML) ---
-export async function generateKP(lead: LeadData, supplierName: string, hooks?: { onKP?: (filename: string, content: string) => void | Promise<void> }) {
-  console.log(`📝 Генерация КП для ${lead.company_name}...`)
+const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c))
 
+// Формирует фактическое КП из карточки поставщика и совпавших товаров без ожидания LLM.
+export async function generateKP(lead: any, supplierInput: any, hooks?: { onKP?: (filename: string, content: string) => void | Promise<void> }) {
+  console.log(`📝 Формирование КП для ${lead.company_name}...`)
   try {
-    const model = genAI.getGenerativeModel(
-      { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
-      { timeout: 60000 }
-    )
-
-    const productsTable = buildProductsTable(lead.matched_skus || [])
+    const supplier = typeof supplierInput === 'string' ? { name: supplierInput } : (supplierInput || {})
+    const products = Array.isArray(lead.matched_skus) ? lead.matched_skus : []
+    const productsTable = buildProductsTable(products)
+    const recipient = Array.isArray(lead.lpr) && lead.lpr[0]?.name ? `Уважаемый(ая) ${escapeHtml(lead.lpr[0].name)}!` : 'Добрый день!'
+    const supplierName = escapeHtml(supplier.name || supplier.supplier_name || 'Поставщик')
+    const contactLines = [
+      supplier.contact && `Контактное лицо: ${escapeHtml(supplier.contact)}`,
+      supplier.phone && `Телефон: ${escapeHtml(supplier.phone)}`,
+      supplier.email && `Email: ${escapeHtml(supplier.email)}`,
+      supplier.website && `Сайт: ${escapeHtml(supplier.website)}`,
+      supplier.inn && `ИНН: ${escapeHtml(supplier.inn)}`,
+      supplier.address && `Адрес: ${escapeHtml(supplier.address)}`
+    ].filter(Boolean).map(line => `<p>${line}</p>`).join('')
+    const terms = [
+      supplier.payment_terms && `<li><b>Оплата:</b> ${escapeHtml(supplier.payment_terms)}</li>`,
+      supplier.delivery && `<li><b>Доставка:</b> ${escapeHtml(supplier.delivery)}</li>`,
+      supplier.warranty && `<li><b>Гарантия:</b> ${escapeHtml(supplier.warranty)}</li>`,
+      supplier.offer_validity && `<li><b>Срок действия предложения:</b> ${escapeHtml(supplier.offer_validity)}</li>`
+    ].filter(Boolean).join('')
+    const customOffer = supplier.offer_text ? `<p>${escapeHtml(supplier.offer_text).replace(/\n/g, '<br>')}</p>` : ''
+    const brands = (lead.matched_brands || []).map(escapeHtml).join(', ')
     const productsBlock = productsTable
-      ? `Обязательно вставь в раздел про ассортимент ТАБЛИЦУ ТОВАРОВ (используй ровно эти данные, цены не меняй):\n${productsTable}\n`
-      : ''
-
-    const prompt = `
-Создай персонализированное коммерческое предложение от поставщика "${supplierName}" для компании "${lead.company_name}".
-Информация о клиенте: Сайт: ${lead.domain}, Город: ${lead.city}, ЛПР: ${lead.lpr.map(l => `${l.name} (${l.position})`).join(', ')}, Бренды: ${lead.brands.join(', ')}${lead.business_size && lead.business_size !== 'unknown' ? `, Размер бизнеса: ${lead.business_size === 'large' ? 'крупный' : lead.business_size === 'medium' ? 'средний' : 'малый'}` : ''}.
-${productsBlock}
-Требования:
-1. Заголовок: "Коммерческое предложение"
-2. Если подтверждённый ЛПР найден — приветствие по его имени. Если ЛПР не найден, используй нейтральное «Добрый день!» и не придумывай имя или должность.
-3. Краткое представление поставщика
-4. Ассортимент (упомяни бренды клиента${productsTable ? ' и вставь таблицу товаров выше' : ''})
-5. Условия сотрудничества (оптовые цены, доставка)
-6. Призыв к действию и контакты.
-Формат: Чистый HTML с базовыми тегами (<h1>, <h2>, <p>, <ul>, <li>, <b> и <table> для товаров), без <html> и <body>, только контент.
-`
-
-    let kpText = ''
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const result = await model.generateContent(prompt)
-        kpText = result.response.text()
-        break
-      } catch (err: any) {
-        const is503 = String(err?.message || err).includes('503')
-        if (!is503 || attempt === 3) throw err
-        console.log(`  ⏳ Gemini перегружен (503), повтор ${attempt + 1}/3...`)
-        await new Promise(r => setTimeout(r, 8000))
-      }
-    }
-
-    // Если AI почему-то не вставил таблицу — добавляем сами после заголовка "Ассортимент"
-    if (productsTable && !kpText.includes('<table')) {
-      const insertPoint = kpText.search(/<h2>[^<]*ассортимент|<h2>[^<]*предложение/i)
-      if (insertPoint >= 0) {
-        const h2end = kpText.indexOf('</h2>', insertPoint)
-        kpText = kpText.slice(0, h2end + 5) + '\n' + productsTable + kpText.slice(h2end + 5)
-      } else {
-        kpText += '\n<h2>Ассортимент и цены</h2>\n' + productsTable
-      }
-    }
-
-    const fileName = `${lead.company_name.replace(/[^a-z0-9а-яё]/gi, '_')}.html`
-    // Локальная копия (fallback-режим без БД) + колбэк для сохранения в БД
+      ? `<h2>Предложение по ассортименту${brands ? `: ${brands}` : ''}</h2>${productsTable}`
+      : `<h2>Ассортимент</h2><p>Подготовим предложение по интересующим вас брендам и артикулам после уточнения потребности.</p>`
+    const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Коммерческое предложение — ${escapeHtml(lead.company_name)}</title><style>body{font:15px/1.55 Arial,sans-serif;color:#172033;max-width:900px;margin:36px auto;padding:0 24px}h1{font-size:26px}h2{font-size:18px;margin-top:28px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#f1f5f9}.muted{color:#64748b}</style></head><body><h1>Коммерческое предложение</h1><p class="muted">${new Date().toLocaleDateString('ru-RU')}</p><p>${recipient}</p><p>Компания <b>${escapeHtml(lead.company_name)}</b>${lead.city ? `, ${escapeHtml(lead.city)}` : ''}.</p><p>${supplierName} предлагает рассмотреть условия сотрудничества по поставке автозапчастей.</p>${customOffer}${productsBlock}${terms ? `<h2>Условия сотрудничества</h2><ul>${terms}</ul>` : ''}<h2>Связаться с поставщиком</h2>${contactLines || '<p>Контактные данные поставщика не заполнены.</p>'}<p>Будем рады уточнить вашу потребность и подготовить актуальный расчёт.</p></body></html>`
+    const slug = String(lead.company_name || 'lead').replace(/[^a-z0-9а-яё]/gi, '_').slice(0, 55) || 'lead'
+    const safeId = String(lead.id || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
+    const fileName = `${slug}_${safeId}.html`
     try {
       const filePath = path.join(rootDir, 'kp_final', fileName)
-      if (!fs.existsSync(path.join(rootDir, 'kp_final'))) {
-        fs.mkdirSync(path.join(rootDir, 'kp_final'))
-      }
-      fs.writeFileSync(filePath, kpText, 'utf-8')
+      if (!fs.existsSync(path.join(rootDir, 'kp_final'))) fs.mkdirSync(path.join(rootDir, 'kp_final'))
+      fs.writeFileSync(filePath, html, 'utf-8')
     } catch { /* локальная копия не критична */ }
-    if (hooks?.onKP) {
-      try { await hooks.onKP(fileName, kpText) } catch (e) { console.error('⚠️ Не удалось сохранить КП в БД:', e) }
-    }
-    console.log(`✅ КП сохранено: ${fileName}`)
+    if (hooks?.onKP) await hooks.onKP(fileName, html)
+    console.log(`✅ КП сформировано: ${fileName}`)
     return fileName
   } catch (error) {
-    console.error('❌ Ошибка генерации КП:', error)
+    console.error('❌ Ошибка формирования КП:', error)
     return null
   }
 }
-
 // --- Главная функция ---
 export async function runPipeline(
   city: string = 'Екатеринбург',
