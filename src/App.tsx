@@ -650,8 +650,11 @@ export default function App() {
           <div className="space-y-7">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               {[
-                ['Сайт', selectedLead.domain],
-                ['Город', selectedLead.city],
+                ['Сайт', selectedLead.domain || '—'],
+                ['Город', selectedLead.city || '—'],
+                ['Вид деятельности', selectedLead.industry || '—'],
+                ['Адрес', selectedLead.address || '—'],
+                ['Телефон', selectedLead.phone || '—'],
                 ['Lead Score', String(selectedLead.lead_score)],
               ].map(([k, v]) => (
                 <div key={k}>
@@ -729,6 +732,8 @@ export default function App() {
                     <div className="text-[11px] text-slate-500 mb-2">
                       {selectedLead.email_source === 'website'
                         ? 'Найден в тексте сайта; принадлежность конкретному ЛПР и актуальность не проверены.'
+                        : selectedLead.email_source === 'import'
+                        ? 'Email загружен из внешнего файла; проверьте актуальность перед использованием.'
                         : 'Источник email в старой записи неизвестен; проверьте адрес перед использованием.'}
                     </div>
                     {selectedLead.lpr_emails.map((email, i) => (
