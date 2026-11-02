@@ -144,6 +144,10 @@ app.post('/api/leads/geocode-missing', async (req, res) => {
     let geocoded = 0
     let failed = 0
     for (const lead of candidates) {
+      if (!String(lead.city || '').trim()) {
+        failed++
+        continue
+      }
       const coordinates = await getCoordinates(String(lead.company_name || ''), String(lead.city || ''), true, String(lead.address || ''))
       if (!coordinates) {
         failed++
