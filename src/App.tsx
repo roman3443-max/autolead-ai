@@ -24,7 +24,8 @@ function parseOfferRows(raw: any): any[] {
   if (!Array.isArray(rows)) throw new Error('В файле не найден список товаров')
   if (rows.length > 1000) throw new Error('Загружайте не более 1000 позиций за раз')
   return rows.map((item: any, index: number) => {
-    const price = Number(String(item.price ?? item.цена ?? '').replace(/[^\d,.-]/g, '').replace(',', '.'))
+    const rawPrice = String(item.price ?? item.цена ?? '').trim()
+    const price = rawPrice ? Number(rawPrice.replace(/[^\d,.-]/g, '').replace(',', '.')) : Number.NaN
     const stock = Number(String(item.stock ?? item.остаток ?? 0).replace(/[^\d,.-]/g, '').replace(',', '.'))
     const normalized = {
       brand: String(item.brand ?? item.бренд ?? '').trim(),
