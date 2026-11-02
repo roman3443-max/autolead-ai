@@ -80,6 +80,12 @@ function getLeadDedupeKeys(lead: any): string[] {
   if (company) keys.push(`company:${company}|city:${normalizeLeadText(lead.city)}`)
   return keys
 }
+function hasValidCoordinates(coordinates: any): boolean {
+  return Boolean(coordinates &&
+    Number.isFinite(Number(coordinates.lat)) && Number.isFinite(Number(coordinates.lng)) &&
+    Math.abs(Number(coordinates.lat)) <= 90 && Math.abs(Number(coordinates.lng)) <= 180)
+}
+
 function pointInRing(lng: number, lat: number, ring: [number, number][]): boolean {
   let inside = false
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -97,7 +103,7 @@ function pointInRing(lng: number, lat: number, ring: [number, number][]): boolea
 }
 
 async function assignLeadToKnownSector(lead: any): Promise<void> {
-  if (!lead?.coordinates) return
+  if (!hasValidCoordinates(lead?.coordinates)) return
   const sectors = await db.sectors.list()
   const sector = sectors.find((candidate: any) => {
     const ring = candidate?.polygon?.geometry?.coordinates?.[0]
@@ -134,7 +140,7 @@ app.post('/api/leads/geocode-missing', async (req, res) => {
   const ids = new Set(rawIds.map((id: any) => String(id)).filter(Boolean))
   try {
     const allLeads = await db.leads.list()
-    const candidates = allLeads.filter((lead: any) => ids.has(String(lead.id)) && !lead.coordinates)
+    const candidates = allLeads.filter((lead: any) => ids.has(String(lead.id)) && !hasValidCoordinates(lead.coordinates))
     let geocoded = 0
     let failed = 0
     for (const lead of candidates) {
@@ -447,7 +453,7 @@ app.post('/api/sectors', async (req, res) => {
   const leads = await db.leads.list()
   let assigned = 0
   for (const lead of leads) {
-    if (lead.coordinates && pointInRing(lead.coordinates.lng, lead.coordinates.lat, ring)) {
+    if (hasValidCoordinates(lead.coordinates) && pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), ring)) {
       await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
       assigned++
     }
