@@ -366,16 +366,16 @@ export default function App() {
   // ---------- лиды ----------
   const handleStatusChange = async (leadId: string, newStatus: string) => {
     const lead = leads.find(l => l.id === leadId)
+    const status_history = [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
     try {
-      await apiFetch(`${API_URL}/api/leads/${leadId}`, {
+      const res = await apiFetch(`${API_URL}/api/leads/${leadId}`, {
         method: 'PUT',
-        body: JSON.stringify({
-          status: newStatus,
-          status_history: [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
-        })
+        body: JSON.stringify({ status: newStatus, status_history })
       })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось изменить этап', 'error'); return }
       loadData()
-      if (selectedLead?.id === leadId) setSelectedLead({ ...selectedLead, status: newStatus })
+      if (selectedLead?.id === leadId) setSelectedLead({ ...selectedLead, status: newStatus, status_history })
     } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
