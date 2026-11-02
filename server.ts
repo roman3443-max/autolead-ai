@@ -63,7 +63,8 @@ function normalizeLeadDomain(value: unknown): string {
   if (!raw) return ''
   try {
     const url = new URL(raw.includes('://') ? raw : `https://${raw}`)
-    return url.hostname.toLowerCase().replace(/^www\./, '')
+    const host = url.hostname.toLowerCase().replace(/^www\./, '')
+    return host.includes('.') || host === 'localhost' ? host : ''
   } catch { return '' }
 }
 
