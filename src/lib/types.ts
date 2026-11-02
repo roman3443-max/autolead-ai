@@ -6,11 +6,15 @@ export interface Lead {
   domain: string
   city: string
   address?: string
+  industry?: string
+  phone?: string
+  source_type?: 'import' | 'search'
+  source_name?: string
   coordinates?: { lat: number; lng: number }
-  coordinate_source?: 'nominatim'
+  coordinate_source?: 'nominatim' | 'import'
   lpr: Lpr[]
   lpr_emails: string[]
-  email_source?: 'website' | 'none'
+  email_source?: 'website' | 'import' | 'none'
   brands: string[]
   matched_brands?: string[]
   lead_score: number
