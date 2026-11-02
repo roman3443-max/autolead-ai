@@ -129,6 +129,16 @@ export default function LeadsPage(p: Props) {
     working: p.leads.filter(l => l.status === 'in_progress').length,
     clients: p.leads.filter(l => l.status === 'converted').length,
   }
+  const pipelineStages = [
+    { status: 'new', step: 'Этап 1', action: 'Проверить профиль и выбрать следующий шаг' },
+    { status: 'in_progress', step: 'Этап 2', action: 'Связаться с компанией и вести диалог' },
+    { status: 'contacted', step: 'Этап 3', action: 'КП отправлено · дождаться ответа' },
+    { status: 'converted', step: 'Этап 4', action: 'Клиент · сделка завершена' },
+  ].map(stage => ({ ...stage, label: STATUS_META[stage.status].label, count: p.leads.filter(lead => lead.status === stage.status).length }))
+  const excludedCounts = {
+    not_target: p.leads.filter(lead => lead.status === 'not_target').length,
+    blacklisted: p.leads.filter(lead => lead.status === 'blacklisted').length,
+  }
 
   return (
     <div className="space-y-6">
@@ -144,6 +154,44 @@ export default function LeadsPage(p: Props) {
           <StatCard label="Клиенты" value={counts.clients} icon={<Inbox size={20} className="text-emerald-300" />} accent="bg-emerald-500/15" delay={180} />
         </div>
       )}
+
+      <section className="card p-4 md:p-5 space-y-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="text-sm font-bold text-slate-100">Пайплайн менеджера</h2>
+            <p className="text-xs text-slate-500 mt-1">Основной путь лида. Нажмите этап, чтобы открыть соответствующие записи.</p>
+          </div>
+          {(excludedCounts.not_target + excludedCounts.blacklisted) > 0 && (
+            <span className="text-xs text-slate-500">Вне основной воронки: {excludedCounts.not_target + excludedCounts.blacklisted}</span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+          {pipelineStages.map((stage, index) => {
+            const active = p.statusFilter === stage.status
+            return (
+              <button key={stage.status} onClick={() => p.setStatusFilter(active ? 'all' : stage.status)}
+                aria-pressed={active}
+                className={`rounded-xl border p-3 text-left transition-colors ${active ? 'border-indigo-400/70 bg-indigo-500/10' : 'border-line bg-ink-800/50 hover:border-slate-600'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500">{stage.step}</span>
+                  <span className={`text-lg font-extrabold tabular-nums ${active ? 'text-indigo-200' : 'text-slate-100'}`}>{stage.count}</span>
+                </div>
+                <div className="text-sm font-semibold text-slate-100 mt-1">{stage.label}</div>
+                <div className="text-[11px] text-slate-500 mt-1 leading-relaxed">{stage.action}</div>
+                {index < pipelineStages.length - 1 && <div className="hidden xl:block text-[10px] text-slate-600 mt-2">Далее →</div>}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+          {(['not_target', 'blacklisted'] as const).map(status => (
+            <button key={status} onClick={() => p.setStatusFilter(p.statusFilter === status ? 'all' : status)}
+              className={`rounded-lg px-2.5 py-1.5 text-xs border transition-colors ${p.statusFilter === status ? 'border-amber-400/50 bg-amber-500/10 text-amber-200' : 'border-line text-slate-500 hover:text-slate-300'}`}>
+              {STATUS_META[status].label}: {excludedCounts[status]}
+            </button>
+          ))}
+        </div>
+      </section>
 
       <div className="card overflow-hidden">
         {/* Панель фильтров */}
