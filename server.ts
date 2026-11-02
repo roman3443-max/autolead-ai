@@ -128,13 +128,16 @@ app.get('/api/leads/export', async (req, res) => {
     new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
     not_target: 'Не целевой', blacklisted: 'Чёрный список', converted: 'Клиент'
   }
-  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Email', 'Бренды', 'Размер', 'Опт', 'Источник', 'Комментарии']
+  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Источник ЛПР', 'Цитата ЛПР', 'Email компании', 'Источник email', 'Бренды', 'Размер', 'Опт', 'Источник задачи', 'Комментарии']
   const rows = leads.map((l: any) => [
     l.company_name, l.domain, l.city, l.address || '',
     l.lead_score, l.lead_tier, statusText[l.status] || l.status,
     (l.lpr || []).map((p: any) => p.name).join('; '),
     (l.lpr || []).map((p: any) => p.position).join('; '),
+    (l.lpr || []).length === 0 ? 'Не найден' : (l.lpr || []).every((p: any) => p.evidence) ? 'Есть цитата источника' : 'Источник не сохранён; проверить',
+    (l.lpr || []).map((p: any) => p.evidence || '').filter(Boolean).join('; '),
     (l.lpr_emails || []).join('; '),
+    l.email_source === 'website' ? 'Найден на сайте; не привязан к ЛПР' : l.email_source === 'none' ? 'Не найден' : 'Источник неизвестен; проверить',
     (l.brands || []).join('; '),
     l.business_size || '', l.wholesale ? 'да' : 'нет',
     l.search_task_name || 'Ручной импорт',
