@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, Polygon } from 'react-leaflet'
+import { useEffect, useMemo, useRef } from 'react'
+import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet'
 import { Map as MapIcon } from 'lucide-react'
 import L from 'leaflet'
 import { Lead } from '../lib/types'
@@ -10,9 +10,25 @@ interface Props {
   managers: any[]
 }
 
+function FitToLeads({ leads }: { leads: Lead[] }) {
+  const map = useMap()
+
+  useEffect(() => {
+    const points = leads.map(lead => [lead.coordinates!.lat, lead.coordinates!.lng] as [number, number])
+    if (points.length === 0) return
+    if (points.length === 1) {
+      map.setView(points[0], 13)
+      return
+    }
+    map.fitBounds(L.latLngBounds(points), { padding: [32, 32], maxZoom: 13 })
+  }, [map, leads])
+
+  return null
+}
+
 export default function MapPage({ leads, sectors, managers }: Props) {
   const mapRef = useRef<L.Map | null>(null)
-  const withCoords = leads.filter(l => l.coordinates && l.coordinate_source === 'nominatim')
+  const withCoords = useMemo(() => leads.filter(l => l.coordinates && l.coordinate_source === 'nominatim'), [leads])
   const withoutGeocoding = leads.length - withCoords.length
 
   useEffect(() => {
@@ -43,6 +59,7 @@ export default function MapPage({ leads, sectors, managers }: Props) {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
+          <FitToLeads leads={withCoords} />
           {sectors.map((sec: any) => (
             <Polygon
               key={sec.id}
