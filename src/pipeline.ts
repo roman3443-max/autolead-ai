@@ -602,13 +602,7 @@ export async function runPipeline(
     // Компании нашлись, но ни один сайт не спарсился — почти всегда это проблема Firecrawl
     throw new Error(`Firecrawl: найдено ${companies.length} компаний, но ни один сайт не удалось спарсить. Проверьте FIRECRAWL_API_KEY и баланс кредитов.`)
   }
-  for (let i = 0; i < leads.length; i++) {
-    onProgress?.('kp', i, leads.length)
-    const kpFile = await generateKP(leads[i], supplierName, { onKP: options?.onKP })
-    if (kpFile) (leads[i] as any).pdf_file = kpFile
-  }
   saveGeocodeCache()
-  onProgress?.('done', leads.length, leads.length)
   console.log('✅ Пайплайн завершен!')
   return leads
 }
