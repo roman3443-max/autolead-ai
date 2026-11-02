@@ -399,12 +399,12 @@ export default function App() {
     if (!selectedLead || !leadEditDraft) return
     const company_name = String(leadEditDraft.company_name || '').trim()
     if (company_name.length < 2) { toast('Укажите название компании', 'error'); return }
-    const emails = [...new Set(String(leadEditDraft.emails || '').split(/[;,|\\n]/).map((value: string) => value.trim().toLowerCase()).filter(Boolean))]
-    if (emails.some((email: string) => !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))) {
+    const emails = [...new Set(String(leadEditDraft.emails || '').split(/[;,|\n]/).map((value: string) => value.trim().toLowerCase()).filter(Boolean))]
+    if (emails.some((email: string) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
       toast('Проверьте формат email или разделите адреса точкой с запятой', 'error')
       return
     }
-    const brands = [...new Set(String(leadEditDraft.brands || '').split(/[;,|\\n]/).map((value: string) => value.trim()).filter(Boolean))]
+    const brands = [...new Set(String(leadEditDraft.brands || '').split(/[;,|\n]/).map((value: string) => value.trim()).filter(Boolean))]
     const lprName = String(leadEditDraft.lprName || '').trim()
     const lpr = lprName
       ? [{ ...(selectedLead.lpr?.[0] || {}), name: lprName, position: String(leadEditDraft.lprPosition || '').trim(), evidence: '' }, ...(selectedLead.lpr || []).slice(1)]
