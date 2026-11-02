@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, useMap, useMapEvents } from 'react-leaflet'
 import { Map as MapIcon, LocateFixed, Square, Circle as CircleIcon, PenTool, X, Check } from 'lucide-react'
 import { CenterModal } from '../components/Drawer'
 import L from 'leaflet'
@@ -108,11 +108,10 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
     (industryFilter === 'all' || lead.industry?.trim() === industryFilter) &&
     (statusFilter === 'all' || lead.status === statusFilter)
   ), [leads, cityFilter, industryFilter, statusFilter])
-  const withCoords = useMemo(() => filteredLeads.filter(lead =>
-    lead.coordinates && ['nominatim', 'import'].includes(lead.coordinate_source || '')
-  ), [filteredLeads])
+  const hasCoordinates = (lead: Lead) => Boolean(lead.coordinates && Number.isFinite(lead.coordinates.lat) && Number.isFinite(lead.coordinates.lng) && Math.abs(lead.coordinates.lat) <= 90 && Math.abs(lead.coordinates.lng) <= 180)
+  const withCoords = useMemo(() => filteredLeads.filter(hasCoordinates), [filteredLeads])
   const withoutGeocoding = filteredLeads.length - withCoords.length
-  const missingLeadIds = filteredLeads.filter(lead => !lead.coordinates).map(lead => lead.id)
+  const missingLeadIds = filteredLeads.filter(lead => !hasCoordinates(lead)).map(lead => lead.id)
 
   const startDrawing = (mode: DrawMode) => {
     setPendingShape(null)
