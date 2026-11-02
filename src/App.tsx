@@ -75,7 +75,10 @@ export default function App() {
   const apiFetch = useMemo(() => createApiFetch(() => setAuthRequired(true)), [])
 
   const handleLogin = async () => {
-    if (!loginEmail.trim() || !loginPassword) return
+    if (!loginEmail.trim() || !loginPassword) {
+      toast('Введите email и пароль', 'error')
+      return
+    }
     setLoginBusy(true)
     try {
       const res = await fetch(`${API_URL}/api/auth/login`, {
