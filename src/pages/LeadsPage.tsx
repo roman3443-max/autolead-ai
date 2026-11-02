@@ -160,7 +160,7 @@ export default function LeadsPage(p: Props) {
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
             <h2 className="text-sm font-bold text-slate-100">Пайплайн менеджера</h2>
-            <p className="text-xs text-slate-500 mt-1">Основной путь лида. Нажмите этап, чтобы открыть соответствующие записи.</p>
+            <p className="text-xs text-slate-500 mt-1">Основной путь лида. Нажмите этап, чтобы открыть записи. После генерации КП этап обновится автоматически; «КП отправлено» отмечайте после фактической отправки.</p>
           </div>
           {(excludedCounts.not_target + excludedCounts.blacklisted) > 0 && (
             <span className="text-xs text-slate-500">Вне основной воронки: {excludedCounts.not_target + excludedCounts.blacklisted}</span>
