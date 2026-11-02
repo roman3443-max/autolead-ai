@@ -58,6 +58,27 @@ function getSupplierCatalog(profile: any = {}) {
     items: Array.isArray(profile.catalogItems) ? profile.catalogItems : fallback.items,
   }
 }
+function normalizeLeadDomain(value: unknown): string {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`)
+    return url.hostname.toLowerCase().replace(/^www\./, '')
+  } catch { return '' }
+}
+
+function normalizeLeadText(value: unknown): string {
+  return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/gi, ' ').trim()
+}
+
+function getLeadDedupeKeys(lead: any): string[] {
+  const keys: string[] = []
+  const domain = normalizeLeadDomain(lead.domain)
+  if (domain) keys.push(`domain:${domain}`)
+  const company = normalizeLeadText(lead.company_name)
+  if (company) keys.push(`company:${company}|city:${normalizeLeadText(lead.city)}`)
+  return keys
+}
 // Безопасное имя файла КП (защита от path traversal)
 const kpFileName = (fileName: any): string | null => {
   if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
@@ -79,6 +100,74 @@ app.get('/api/leads', async (req, res) => {
   res.json(await db.leads.list())
 })
 
+app.post('/api/leads/import', async (req, res) => {
+  const rows = req.body?.leads
+  if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ error: 'В CSV нет строк для импорта' })
+  if (rows.length > 1000) return res.status(400).json({ error: 'За один раз можно импортировать не более 1000 строк' })
+  const dryRun = req.body?.dryRun === true
+  const sourceName = String(req.body?.sourceName || 'Внешняя база').trim().slice(0, 120)
+  try {
+    const existingLeads = await db.leads.list()
+    const knownKeys = new Set(existingLeads.flatMap((lead: any) => getLeadDedupeKeys(lead)))
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const catalog = getSupplierCatalog(supplier)
+    const scoring = (await db.settings.get('scoring_config')) || {}
+    const newPreview: any[] = []
+    const duplicatePreview: any[] = []
+    const invalidRows: any[] = []
+    let imported = 0
+    let duplicates = 0
+
+    for (const [index, raw] of rows.entries()) {
+      const company_name = String(raw?.company_name || '').trim().slice(0, 200)
+      if (company_name.length < 2) {
+        invalidRows.push({ row: index + 1, company_name, reason: 'Не указано название компании' })
+        continue
+      }
+      const domain = normalizeLeadDomain(raw?.domain || raw?.website)
+      const city = String(raw?.city || '').trim().slice(0, 100)
+      const industry = String(raw?.industry || '').trim().slice(0, 120)
+      const rawEmails = Array.isArray(raw?.lpr_emails) ? raw.lpr_emails : String(raw?.email || '').split(/[;,|]/)
+      const lpr_emails = [...new Set(rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
+      const rawLpr = Array.isArray(raw?.lpr) ? raw.lpr : (raw?.lpr_name ? [{ name: raw.lpr_name, position: raw.lpr_position || '' }] : [])
+      const lpr = rawLpr.slice(0, 5).map((person: any) => ({ name: String(person?.name || '').trim(), position: String(person?.position || '').trim(), evidence: '' })).filter((person: any) => person.name)
+      const rawBrands = Array.isArray(raw?.brands) ? raw.brands : String(raw?.brands || '').split(/[;,|]/)
+      const brands = [...new Set(rawBrands.map((brand: any) => String(brand).trim()).filter(Boolean))].slice(0, 30)
+      const lat = Number(raw?.lat), lng = Number(raw?.lng)
+      const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+      const lead: any = {
+        company_name, domain, city, industry, address: String(raw?.address || '').trim().slice(0, 250),
+        phone: String(raw?.phone || '').trim().slice(0, 80),
+        coordinates: hasCoordinates ? { lat, lng } : undefined,
+        coordinate_source: hasCoordinates ? 'import' : undefined,
+        lpr, lpr_emails, email_source: lpr_emails.length ? 'import' : 'none', brands,
+        business_size: 'unknown', wholesale: false, reason: '', matched_brands: [], matched_skus: [],
+        status: 'new', pdf_file: null, comments: [],
+        status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
+        source_type: 'import', source_name: sourceName, search_task_name: `Импорт: ${sourceName}`,
+      }
+      const keys = getLeadDedupeKeys(lead)
+      if (keys.some(key => knownKeys.has(key))) {
+        duplicates++
+        if (duplicatePreview.length < 20) duplicatePreview.push({ row: index + 1, company_name, domain, city })
+        keys.forEach(key => knownKeys.add(key))
+        continue
+      }
+      const scored = rescoreLead(lead, scoring, catalog)
+      if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier })
+      if (!dryRun) {
+        const id = `lead_import_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`
+        await db.leads.create({ ...scored, id })
+        imported++
+      }
+      keys.forEach(key => knownKeys.add(key))
+    }
+    res.json({ dryRun, total: rows.length, importable: newPreview.length, imported, duplicates, invalid: invalidRows.length, newPreview, duplicatePreview, invalidRows })
+  } catch (error) {
+    console.error('❌ Ошибка импорта лидов:', error)
+    res.status(500).json({ error: 'Не удалось обработать файл импорта' })
+  }
+})
 app.put('/api/leads/:id', async (req, res) => {
   const body = { ...req.body }
   if (body.pdf_file !== undefined) {
@@ -457,15 +546,15 @@ async function launchPipelineJob(params: {
         return
       }
 
-      // Добавление новых лидов (дедуп по домену без учёта www., защита от дублей в прогоне)
-      const rootDomain = (d: string) => String(d || '').toLowerCase().replace(/^www\./, '')
+      // Дедупликация по домену, затем по названию и городу; так учитываются и импортированные записи.
       const existingLeads = await db.leads.list()
-      const existingDomains = new Set(existingLeads.map((l: any) => rootDomain(l.domain)))
+      const knownLeadKeys = new Set(existingLeads.flatMap((lead: any) => getLeadDedupeKeys(lead)))
 
       let addedCount = 0
       await updateJob(jobId, { stage: 'save', processed: 0, total: newLeads.length, message: stageText.save })
       for (const [index, lead] of newLeads.entries()) {
-        if (!existingDomains.has(rootDomain(lead.domain))) {
+        const dedupeKeys = getLeadDedupeKeys(lead)
+        if (!dedupeKeys.some(key => knownLeadKeys.has(key))) {
           await db.leads.create({
             ...lead,
             ...source,
@@ -477,7 +566,7 @@ async function launchPipelineJob(params: {
             sector_id: undefined,
             assigned_manager_id: undefined
           })
-          existingDomains.add(rootDomain(lead.domain))
+          dedupeKeys.forEach(key => knownLeadKeys.add(key))
           addedCount++
         }
         await updateJob(jobId, { stage: 'save', processed: index + 1, total: newLeads.length, message: stageText.save })
