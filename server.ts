@@ -96,6 +96,16 @@ function pointInRing(lng: number, lat: number, ring: [number, number][]): boolea
   return inside
 }
 
+async function assignLeadToKnownSector(lead: any): Promise<void> {
+  if (!lead?.coordinates) return
+  const sectors = await db.sectors.list()
+  const sector = sectors.find((candidate: any) => {
+    const ring = candidate?.polygon?.geometry?.coordinates?.[0]
+    return Array.isArray(ring) && ring.length >= 4 && pointInRing(lead.coordinates.lng, lead.coordinates.lat, ring)
+  })
+  if (sector) await db.leads.update(lead.id, { sector_id: sector.id, assigned_manager_id: sector.manager_id })
+}
+
 // Безопасное имя файла КП (защита от path traversal)
 const kpFileName = (fileName: any): string | null => {
   if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
@@ -133,10 +143,16 @@ app.post('/api/leads/geocode-missing', async (req, res) => {
         failed++
         continue
       }
-      await db.leads.update(lead.id, {
+      const updatedLead = {
+        ...lead,
         coordinates: { lat: coordinates.lat, lng: coordinates.lng },
         coordinate_source: 'nominatim',
+      }
+      await db.leads.update(lead.id, {
+        coordinates: updatedLead.coordinates,
+        coordinate_source: updatedLead.coordinate_source,
       })
+      await assignLeadToKnownSector(updatedLead)
       geocoded++
     }
     res.json({ requested: ids.size, processed: candidates.length, geocoded, failed, remaining: failed })
