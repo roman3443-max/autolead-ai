@@ -1,17 +1,24 @@
 import jwt from 'jsonwebtoken'
 import { db, initDb, dbMode } from './db/index.ts'
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
-if (JWT_SECRET === 'dev-secret-change-me') {
-  console.log('⚠️ JWT_SECRET не задан — используется dev-секрет. Задайте JWT_SECRET в окружении.')
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET?.trim() || ''
+  if (secret.length < 32) {
+    throw new Error('JWT_SECRET должен быть задан и содержать не менее 32 символов.')
+  }
+  return secret
+}
+
+export function assertAuthConfig(): void {
+  getJwtSecret()
 }
 
 export function signToken(user: any): string {
-  return jwt.sign({ email: user.email, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '7d' })
+  return jwt.sign({ email: user.email, role: user.role, name: user.name }, getJwtSecret(), { expiresIn: '7d' })
 }
 
 export function verifyToken(token: string): any | null {
-  try { return jwt.verify(token, JWT_SECRET) } catch { return null }
+  try { return jwt.verify(token, getJwtSecret()) } catch { return null }
 }
 
 // Express middleware: требует Bearer JWT для всех /api, кроме /api/auth/login
