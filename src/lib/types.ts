@@ -1,4 +1,4 @@
-export interface Lpr { name: string; position: string }
+export interface Lpr { name: string; position: string; evidence?: string }
 
 export interface Lead {
   id: string
@@ -7,8 +7,10 @@ export interface Lead {
   city: string
   address?: string
   coordinates?: { lat: number; lng: number }
+  coordinate_source?: 'nominatim'
   lpr: Lpr[]
   lpr_emails: string[]
+  email_source?: 'website' | 'none'
   brands: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
