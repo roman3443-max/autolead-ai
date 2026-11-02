@@ -24,8 +24,8 @@ function parseOfferRows(raw: any): any[] {
   if (!Array.isArray(rows)) throw new Error('В файле не найден список товаров')
   if (rows.length > 1000) throw new Error('Загружайте не более 1000 позиций за раз')
   return rows.map((item: any, index: number) => {
-    const price = Number(String(item.price ?? item.цена ?? '').replace(/\s/g, '').replace(',', '.'))
-    const stock = Number(String(item.stock ?? item.остаток ?? 0).replace(/\s/g, '').replace(',', '.'))
+    const price = Number(String(item.price ?? item.цена ?? '').replace(/[^\d,.-]/g, '').replace(',', '.'))
+    const stock = Number(String(item.stock ?? item.остаток ?? 0).replace(/[^\d,.-]/g, '').replace(',', '.'))
     const normalized = {
       brand: String(item.brand ?? item.бренд ?? '').trim(),
       sku: String(item.sku ?? item.article ?? item.артикул ?? '').trim(),
@@ -718,11 +718,15 @@ export default function App() {
             </div>
 
             <div>
-              <div className="label">Бренды</div>
+              <div className="label">Бренды компании</div>
               <div className="flex flex-wrap gap-1.5">
                 {selectedLead.brands.map((b, i) => (
                   <span key={i} className="chip bg-ink-700 text-slate-300 !px-2.5 !py-1">{b}</span>
                 ))}
+              </div>
+              <div className="label mt-3">Совпадение с предложением поставщика</div>
+              <div className="text-[13px] text-slate-300">
+                {selectedLead.matched_brands?.length ? selectedLead.matched_brands.join(', ') : 'Совпавших брендов нет — брендовая часть скоринга не начислена.'}
               </div>
             </div>
 
