@@ -12,6 +12,7 @@ export interface Lead {
   lpr_emails: string[]
   email_source?: 'website' | 'none'
   brands: string[]
+  matched_brands?: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
   business_size?: 'small' | 'medium' | 'large' | 'unknown'
@@ -82,6 +83,6 @@ export const SIZE_LABELS: Record<string, string> = {
 }
 
 export const SCORING_FIELDS: [string, string][] = [
-  ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Бренды'],
+  ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Совпадение с ассортиментом'],
   ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент сайта'],
 ]
