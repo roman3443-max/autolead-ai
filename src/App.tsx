@@ -524,6 +524,19 @@ export default function App() {
     return result
   }
 
+  const handleGeocodeMissing = async (leadIds: string[]) => {
+    const res = await apiFetch(`${API_URL}/api/leads/geocode-missing`, {
+      method: 'POST',
+      body: JSON.stringify({ leadIds })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Не удалось найти координаты')
+    await loadData()
+    if (data.geocoded > 0) toast(`Координаты найдены для ${data.geocoded} лидов.${data.failed ? ` Не удалось определить для ${data.failed}; проверьте адреса.` : ''}`, data.failed ? 'info' : 'success')
+    else toast('Геокодер не нашёл точные точки для выбранных лидов. Добавьте точные адреса или координаты вручную при импорте.', 'info')
+    return data
+  }
+
   const handleExportCSV = async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/leads/export`)
@@ -701,7 +714,7 @@ export default function App() {
             onStatusChange={handleStatusChange}
           />
         )}
-        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} />}
+        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onCreateSector={handleCreateSector} />}
         {activeTab === 'managers' && <ManagersPage managers={managers} analytics={analytics} />}
         {activeTab === 'analytics' && <AnalyticsPage analytics={analytics} leads={leads} loading={loading} />}
       </main>
