@@ -3,11 +3,10 @@ import cors from 'cors'
 import path from 'path'
 import { runPipeline, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
-import { authMiddleware, loginHandler, requireAdmin } from './src/auth.ts'
+import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
-const rootDir = process.cwd()
 
 // Разрешённые источники (CORS). Переопределяется переменной ALLOWED_ORIGINS через запятую
 const DEFAULT_ORIGINS = [
@@ -49,8 +48,6 @@ const runCooldown = (req: any, res: any, next: any) => {
   next()
 }
 
-app.use('/kp_final', express.static(path.join(rootDir, 'kp_final')))
-
 // Безопасное имя файла КП (защита от path traversal)
 const kpFileName = (fileName: any): string | null => {
   if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
@@ -59,18 +56,8 @@ const kpFileName = (fileName: any): string | null => {
 }
 
 // ---------- auth ----------
-app.get('/api/health', async (req, res) => {
-  let counts: any = null
-  try {
-    counts = {
-      leads: (await db.leads.list()).length,
-      tasks: (await db.tasks.list()).length,
-      users: (await db.users.list()).length
-    }
-  } catch { /* ignore */ }
-  let dbHost: string | null = null
-  try { dbHost = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null } catch { dbHost = 'invalid-url' }
-  res.json({ ok: true, mode: dbMode(), counts, hasDatabaseUrl: Boolean(process.env.DATABASE_URL), dbHost })
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true })
 })
 
 app.post('/api/auth/login', loginHandler)
@@ -105,6 +92,8 @@ app.get('/api/leads/:id/pdf', async (req, res) => {
   const content = await db.kp.get(safeName)
   if (content === null) return res.status(404).json({ error: 'Файл не существует' })
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; img-src data: https:; sandbox")
+  res.setHeader('Cache-Control', 'private, no-store')
   res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(safeName)}"`)
   res.send(content)
 })
@@ -539,6 +528,7 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
 
 // ---------- boot ----------
 async function main() {
+  assertAuthConfig()
   const mode = await initDb()
   console.log(`💾 Режим хранения: ${mode === 'pg' ? 'PostgreSQL' : 'JSON-файлы (fallback)'}`)
   try {
