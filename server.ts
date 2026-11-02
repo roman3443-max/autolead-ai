@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
-import { runPipeline, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
+import { runPipeline, generateKP, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
 import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
 
@@ -84,6 +84,30 @@ app.put('/api/leads/:id', async (req, res) => {
   res.json(updated)
 })
 
+app.post('/api/leads/:id/generate-kp', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  const supplierConfig = (await db.settings.get('supplier_config')) || {}
+  const supplierName = supplierConfig?.name || 'УралАвтоОпт'
+  let stored = false
+  try {
+    const filename = await generateKP(lead, supplierName, {
+      onKP: async (name, content) => {
+        await db.kp.put(name, lead.id, content)
+        stored = true
+      }
+    })
+    if (!filename || !stored) {
+      return res.status(502).json({ error: 'Не удалось сформировать КП. Проверьте ключ Gemini и повторите попытку.' })
+    }
+    const updated = await db.leads.update(lead.id, { pdf_file: filename })
+    if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+    res.json(updated)
+  } catch (error) {
+    console.error('❌ Ошибка формирования КП:', error)
+    res.status(500).json({ error: 'Ошибка при формировании КП' })
+  }
+})
 app.get('/api/leads/:id/pdf', async (req, res) => {
   const lead = await db.leads.get(req.params.id)
   if (!lead?.pdf_file) return res.status(404).json({ error: 'КП не найдено' })
@@ -350,9 +374,9 @@ async function launchPipelineJob(params: {
 
   const stageText: Record<string, string> = {
     search: 'Поиск компаний...',
-    enrich: 'Анализ сайтов...',
-    kp: 'Генерация КП...',
-    done: 'Готово'
+    enrich: 'Проверка сайтов и оценка лидов...',
+    save: 'Проверка дублей и сохранение...',
+    done: 'Поиск завершён'
   }
 
   ;(async () => {
@@ -366,17 +390,9 @@ async function launchPipelineJob(params: {
     }, 60_000)
 
     try {
-      const supplierConfig = (await db.settings.get('supplier_config')) || {}
-      const supplierName = supplierConfig?.name || 'УралАвтоОпт'
-
-      const newLeads = await runPipeline(city, industry, safeLimit, supplierName, (stage, processed, total) => {
-        updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
-      }, {
-        ...options,
-        onKP: async (filename: string, content: string) => {
-          await db.kp.put(filename, null, content).catch((e: any) => console.error('⚠️ KP save:', e))
-        }
-      })
+      const newLeads = await runPipeline(city, industry, safeLimit, '', (stage, processed, total) => {
+        void updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
+      }, options)
 
       if (newLeads.length === 0) {
         await updateJob(jobId, {
@@ -393,14 +409,15 @@ async function launchPipelineJob(params: {
       const existingDomains = new Set(existingLeads.map((l: any) => rootDomain(l.domain)))
 
       let addedCount = 0
-      for (const lead of newLeads) {
+      await updateJob(jobId, { stage: 'save', processed: 0, total: newLeads.length, message: stageText.save })
+      for (const [index, lead] of newLeads.entries()) {
         if (!existingDomains.has(rootDomain(lead.domain))) {
           await db.leads.create({
             ...lead,
             ...source,
             id: `lead_${Date.now()}_${addedCount}`,
             status: 'new',
-            pdf_file: (lead as any).pdf_file || null,
+            pdf_file: null,
             comments: [],
             status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
             sector_id: undefined,
@@ -409,12 +426,13 @@ async function launchPipelineJob(params: {
           existingDomains.add(rootDomain(lead.domain))
           addedCount++
         }
+        await updateJob(jobId, { stage: 'save', processed: index + 1, total: newLeads.length, message: stageText.save })
       }
 
       const message = addedCount > 0
         ? `Найдено ${newLeads.length}, добавлено ${addedCount} новых лидов`
         : `Найдено ${newLeads.length} компаний, все уже есть в базе`
-      await updateJob(jobId, { status: 'done', added: addedCount, totalFound: newLeads.length, message })
+      await updateJob(jobId, { status: 'done', stage: 'done', processed: newLeads.length, total: newLeads.length, added: addedCount, totalFound: newLeads.length, message })
       console.log(`✅ Job ${jobId}: ${message}`)
       onComplete?.({ status: 'done', found: newLeads.length, added: addedCount })
     } catch (error) {
