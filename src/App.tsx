@@ -921,10 +921,11 @@ export default function App() {
               </button>
               <button
                 onClick={() => selectedLead.pdf_file ? handleDownloadPDF(selectedLead) : handleGenerateKP(selectedLead)}
-                disabled={kpGeneratingId === selectedLead.id}
+                disabled={kpGeneratingId === selectedLead.id || (!selectedLead.pdf_file && ['not_target', 'blacklisted'].includes(selectedLead.status))}
                 className="btn-ghost text-[13px]"
+                title={!selectedLead.pdf_file && ['not_target', 'blacklisted'].includes(selectedLead.status) ? 'Верните лид в рабочий статус для формирования КП' : undefined}
               >
-                <FileDown size={14} /> {kpGeneratingId === selectedLead.id ? 'Формирую КП…' : selectedLead.pdf_file ? 'Открыть КП' : 'Сформировать КП'}
+                <FileDown size={14} /> {kpGeneratingId === selectedLead.id ? 'Формирую КП…' : selectedLead.pdf_file ? 'Открыть КП' : ['not_target', 'blacklisted'].includes(selectedLead.status) ? 'Лид исключён' : 'Сформировать КП'}
               </button>
               <button onClick={() => handleDeleteLead(selectedLead)} className="btn-danger text-[13px] ml-auto">
                 <Trash2 size={14} /> Удалить
