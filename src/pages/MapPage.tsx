@@ -106,6 +106,11 @@ export default function MapPage({ leads, sectors, managers }: Props) {
               <Popup>
                 <b>{lead.company_name}</b><br />
                 {lead.city}{lead.industry ? ` · ${lead.industry}` : ''}<br />
+                {lead.address && <>{lead.address}<br /></>}
+                {lead.phone && <>Телефон: {lead.phone}<br /></>}
+                {lead.lpr?.[0]?.name && <>Контакт: {lead.lpr[0].name}{lead.lpr[0].position ? ` · ${lead.lpr[0].position}` : ''}<br /></>}
+                {lead.lpr_emails?.[0] && <>Email: {lead.lpr_emails[0]}<br /></>}
+                Статус: {STATUS_META[lead.status]?.label || lead.status}<br />
                 Скор: {lead.lead_score} · Tier {lead.lead_tier}
               </Popup>
             </Marker>
