@@ -112,6 +112,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
   const withCoords = useMemo(() => filteredLeads.filter(hasCoordinates), [filteredLeads])
   const withoutGeocoding = filteredLeads.length - withCoords.length
   const missingLeadIds = filteredLeads.filter(lead => !hasCoordinates(lead)).map(lead => lead.id)
+  const geocodeBatchIds = missingLeadIds.slice(0, 50)
 
   const startDrawing = (mode: DrawMode) => {
     setPendingShape(null)
@@ -157,7 +158,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
   const handleGeocodeClick = async () => {
     setGeocodeBusy(true); setGeocodeError('')
     try {
-      await onGeocodeMissing(missingLeadIds)
+      await onGeocodeMissing(geocodeBatchIds)
     } catch (error: any) {
       setGeocodeError(error?.message || 'Не удалось найти координаты')
     } finally { setGeocodeBusy(false) }
@@ -223,7 +224,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
         <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
           {missingLeadIds.length > 0 && (
             <button onClick={() => void handleGeocodeClick()} disabled={geocodeBusy} className="btn-ghost !py-2 text-[13px]">
-              <LocateFixed size={14} /> {geocodeBusy ? 'Ищу координаты…' : 'Найти координаты без меток (' + missingLeadIds.length + ')'}
+              <LocateFixed size={14} /> {geocodeBusy ? 'Ищу координаты…' : 'Найти координаты (' + geocodeBatchIds.length + ' из ' + missingLeadIds.length + ')'}
             </button>
           )}
           <span className="text-xs text-slate-600">Нарисовать сектор:</span>
