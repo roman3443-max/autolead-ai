@@ -257,7 +257,7 @@ export default function LeadsPage(p: Props) {
                         {(lead.lpr_emails || []).length > 0 && (
                           <div className="mt-2 pt-2 border-t border-line/60">
                             <div className="text-[10px] uppercase tracking-wide text-slate-600 mb-1">
-                              {lead.email_source === 'website' ? 'Найдено на сайте · не привязано к ЛПР' : lead.email_source === 'import' ? 'Импортировано · проверьте источник' : 'Email из старой записи · проверьте'}
+                              {lead.email_source === 'website' ? 'Найдено на сайте · не привязано к ЛПР' : lead.email_source === 'import' ? 'Импортировано · проверьте источник' : lead.email_source === 'manual' ? 'Введено вручную' : 'Email из старой записи · проверьте'}
                             </div>
                             {lead.lpr_emails.slice(0, 2).map((email, idx) => (
                               <div key={idx} className="text-[11px] text-slate-400 truncate">{email}</div>
