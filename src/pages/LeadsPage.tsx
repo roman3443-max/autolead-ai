@@ -166,6 +166,14 @@ export default function LeadsPage(p: Props) {
               <Upload size={14} /> Импорт CSV
             </button>
             <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={e => void handleImportFile(e.target.files?.[0])} className="hidden" />
+            <button onClick={() => {
+              const csv = '\uFEFFКомпания;Сайт;Город;Вид деятельности;Адрес;Телефон;Email;Бренды;ЛПР;Должность;Широта;Долгота\\r\\nАвтоСервис;example.ru;Екатеринбург;СТО;Ленина 1;+7 900 000-00-00;info@example.ru;Bosch;Иван Иванов;Директор;56.838;60.597'
+              const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+              const a = document.createElement('a'); a.href = url; a.download = 'шаблон_импорта_лидов.csv'
+              document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+            }} className="btn-ghost !py-2 text-[13px]">
+              <FileDown size={14} /> Шаблон
+            </button>
             <button onClick={p.onExportCSV} className="btn-ghost !py-2 text-[13px]">
               <Download size={14} /> Экспорт CSV
             </button>
@@ -215,6 +223,7 @@ export default function LeadsPage(p: Props) {
                         <div className="font-semibold text-slate-100 hover:text-indigo-300 transition-colors">{lead.company_name}</div>
                         <div className="text-[12px] text-slate-500 mt-0.5">{lead.domain}</div>
                         <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                          {lead.industry && <span className='chip bg-indigo-500/10 text-indigo-300'>{lead.industry}</span>}
                           {lead.business_size && lead.business_size !== 'unknown' && (
                             <span className="chip bg-sky-500/10 text-sky-300">{SIZE_LABELS[lead.business_size]}</span>
                           )}
@@ -240,7 +249,7 @@ export default function LeadsPage(p: Props) {
                         {(lead.lpr_emails || []).length > 0 && (
                           <div className="mt-2 pt-2 border-t border-line/60">
                             <div className="text-[10px] uppercase tracking-wide text-slate-600 mb-1">
-                              {lead.email_source === 'website' ? 'Найдено на сайте · не привязано к ЛПР' : 'Email из старой записи · проверьте'}
+                              {lead.email_source === 'website' ? 'Найдено на сайте · не привязано к ЛПР' : lead.email_source === 'import' ? 'Импортировано · проверьте источник' : 'Email из старой записи · проверьте'}
                             </div>
                             {lead.lpr_emails.slice(0, 2).map((email, idx) => (
                               <div key={idx} className="text-[11px] text-slate-400 truncate">{email}</div>
@@ -297,7 +306,7 @@ export default function LeadsPage(p: Props) {
           </div>
         )}
       </div>
-      <CenterModal open={Boolean(importPreview)} onClose={() => { if (!importBusy) { setImportPreview(null); setImportError('') } }} title="Импорт внешних лидов" width="max-w-2xl">
+      <CenterModal open={Boolean(importPreview) || Boolean(importError)} onClose={() => { if (!importBusy) { setImportPreview(null); setImportError('') } }} title="Импорт внешних лидов" width="max-w-2xl">
         {importPreview && (
           <div className="space-y-4">
             <p className="text-sm text-slate-400">Файл: <span className="text-slate-200">{importSource}</span>. Импортируем с пересчётом скоринга и проверкой дублей.</p>
@@ -332,7 +341,7 @@ export default function LeadsPage(p: Props) {
             {importError && <div className="text-sm text-rose-300">{importError}</div>}
             <div className="flex justify-end gap-2">
               <button onClick={() => { setImportPreview(null); setImportError('') }} disabled={importBusy} className="btn-ghost">Отмена</button>
-              <button onClick={() => void handleCommitImport()} disabled={importBusy || !importPreview.importable} className="btn-primary">
+              <button onClick={() => void handleCommitImport()} disabled={importBusy || !importPreview?.importable} className="btn-primary">
                 {importBusy ? 'Обработка...' : `Импортировать ${importPreview.importable}`}
               </button>
             </div>
