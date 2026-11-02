@@ -3,7 +3,7 @@ import 'leaflet/dist/leaflet.css'
 import L from 'leaflet'
 import {
   Copy, Send, FileDown, Trash2, Mail, KeyRound, Briefcase, CheckCircle2, Circle,
-  Settings2, RefreshCw, Plus,
+  Settings2, RefreshCw, Plus, Upload,
 } from 'lucide-react'
 
 import { API_URL, createApiFetch, setToken, getToken } from './lib/api'
@@ -19,6 +19,70 @@ import MapPage from './pages/MapPage'
 import ManagersPage from './pages/ManagersPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 
+function parseOfferRows(raw: any): any[] {
+  const rows = Array.isArray(raw) ? raw : raw?.items
+  if (!Array.isArray(rows)) throw new Error('В файле не найден список товаров')
+  if (rows.length > 1000) throw new Error('Загружайте не более 1000 позиций за раз')
+  return rows.map((item: any, index: number) => {
+    const price = Number(String(item.price ?? item.цена ?? '').replace(/\s/g, '').replace(',', '.'))
+    const stock = Number(String(item.stock ?? item.остаток ?? 0).replace(/\s/g, '').replace(',', '.'))
+    const normalized = {
+      brand: String(item.brand ?? item.бренд ?? '').trim(),
+      sku: String(item.sku ?? item.article ?? item.артикул ?? '').trim(),
+      name: String(item.name ?? item.product ?? item.наименование ?? '').trim(),
+      car: String(item.car ?? item.fitment ?? item.применяемость ?? '').trim(),
+      price,
+      stock: Number.isFinite(stock) ? stock : 0,
+    }
+    if (!normalized.brand || !normalized.name || !Number.isFinite(price) || price < 0) {
+      throw new Error(`Проверьте строку ${index + 1}: нужны бренд, наименование и цена`)
+    }
+    return normalized
+  })
+}
+
+function parseOfferCsv(text: string): any[] {
+  const input = text.replace(/^\uFEFF/, '')
+  const firstLine = input.split(/\r?\n/, 1)[0] || ''
+  const delimiter = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : (firstLine.includes('\t') ? '\t' : ',')
+  const rows: string[][] = []
+  let row: string[] = [], cell = '', quoted = false
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]
+    if (ch === '"' && quoted && input[i + 1] === '"') { cell += '"'; i++; continue }
+    if (ch === '"') { quoted = !quoted; continue }
+    if (!quoted && ch === delimiter) { row.push(cell); cell = ''; continue }
+    if (!quoted && (ch === '\n' || ch === '\r')) {
+      if (ch === '\r' && input[i + 1] === '\n') i++
+      row.push(cell); cell = ''
+      if (row.some(value => value.trim())) rows.push(row)
+      row = []; continue
+    }
+    cell += ch
+  }
+  row.push(cell)
+  if (row.some(value => value.trim())) rows.push(row)
+  if (rows.length < 2) throw new Error('CSV должен содержать заголовок и хотя бы одну строку товара')
+  const headers = rows[0].map(value => value.trim().toLowerCase())
+  const find = (record: string[], aliases: string[]) => {
+    const index = headers.findIndex(header => aliases.includes(header))
+    return index < 0 ? '' : record[index] || ''
+  }
+  return parseOfferRows(rows.slice(1).map(record => ({
+    brand: find(record, ['brand', 'бренд']),
+    sku: find(record, ['sku', 'article', 'артикул', 'код']),
+    name: find(record, ['name', 'product', 'наименование', 'товар']),
+    car: find(record, ['car', 'fitment', 'применяемость', 'автомобиль']),
+    price: find(record, ['price', 'цена']),
+    stock: find(record, ['stock', 'остаток', 'количество']),
+  })))
+}
+
+async function readOfferFile(file: File): Promise<any[]> {
+  const text = await file.text()
+  if (file.name.toLowerCase().endsWith('.json')) return parseOfferRows(JSON.parse(text))
+  return parseOfferCsv(text)
+}
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
@@ -59,7 +123,7 @@ export default function App() {
       const saved = localStorage.getItem('supplier_config')
       if (saved) { try { return JSON.parse(saved) } catch { /* ignore */ } }
     }
-    return { name: 'УралАвтоОпт', contact: 'Петров И.С.' }
+    return { name: 'УралАвтоОпт', contact: 'Петров И.С.', catalogItems: [] }
   })
   const [supplierDraft, setSupplierDraft] = useState<any>(supplier)
   const [supplierOpen, setSupplierOpen] = useState(false)
@@ -417,17 +481,35 @@ export default function App() {
   }
 
   // ---------- поставщик ----------
-  const handleSaveSupplier = async () => {
-    setSupplier(supplierDraft)
-    try { localStorage.setItem('supplier_config', JSON.stringify(supplierDraft)) } catch { /* ignore */ }
-    setSupplierOpen(false)
+  const handleCatalogUpload = async (event: any) => {
+    const file = event.target.files?.[0] as File | undefined
+    if (!file) return
     try {
-      await apiFetch(`${API_URL}/api/supplier-config`, {
+      const catalogItems = await readOfferFile(file)
+      setSupplierDraft((prev: any) => ({ ...prev, catalogItems }))
+      const brands = [...new Set(catalogItems.map(item => item.brand))]
+      toast(`Загружено ${catalogItems.length} позиций по ${brands.length} брендам`, 'success')
+    } catch (error: any) {
+      toast(error?.message || 'Не удалось прочитать файл предложения', 'error')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const handleSaveSupplier = async () => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/supplier-config`, {
         method: 'PUT',
-        body: JSON.stringify({ name: supplierDraft.name, contact: supplierDraft.contact })
+        body: JSON.stringify(supplierDraft)
       })
-      toast('Данные поставщика обновлены', 'success')
-    } catch { toast('Сохранено локально, но сервер недоступен', 'error') }
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось сохранить карточку поставщика', 'error'); return }
+      setSupplier(data)
+      setSupplierDraft(data)
+      try { localStorage.setItem('supplier_config', JSON.stringify(data)) } catch { /* ignore */ }
+      setSupplierOpen(false)
+      toast('Карточка поставщика и предложение по брендам сохранены', 'success')
+    } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
   // ---------- фильтр ----------
@@ -831,19 +913,39 @@ export default function App() {
       </CenterModal>
 
       {/* Настройки поставщика */}
-      <CenterModal open={supplierOpen} onClose={() => setSupplierOpen(false)} title="Настройки поставщика" width="max-w-md">
-        <div className="space-y-4">
-          <div>
-            <label className="label">Название компании</label>
-            <input value={supplierDraft.name || ''} onChange={e => setSupplierDraft({ ...supplierDraft, name: e.target.value })} className="input" />
+      <CenterModal open={supplierOpen} onClose={() => setSupplierOpen(false)} title="Карточка поставщика для КП" width="max-w-2xl">
+        <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-4">
+          <div className="grid sm:grid-cols-2 gap-3">
+            {([
+              ['name', 'Название компании'], ['inn', 'ИНН'], ['contact', 'Контактное лицо'],
+              ['phone', 'Телефон'], ['email', 'Email'], ['website', 'Сайт'], ['address', 'Адрес'],
+              ['payment_terms', 'Условия оплаты'], ['delivery', 'Доставка'], ['warranty', 'Гарантия'],
+              ['offer_validity', 'Срок действия КП'],
+            ] as [string, string][]).map(([key, label]) => (
+              <div key={key}>
+                <label className="label">{label}</label>
+                <input value={supplierDraft[key] || ''} onChange={e => setSupplierDraft({ ...supplierDraft, [key]: e.target.value })} className="input" />
+              </div>
+            ))}
           </div>
           <div>
-            <label className="label">Контактное лицо</label>
-            <input value={supplierDraft.contact || ''} onChange={e => setSupplierDraft({ ...supplierDraft, contact: e.target.value })} className="input" />
+            <label className="label">Текст предложения и особые условия</label>
+            <textarea value={supplierDraft.offer_text || ''} onChange={e => setSupplierDraft({ ...supplierDraft, offer_text: e.target.value })} className="input min-h-24 resize-y" placeholder="Например: специализация, преимущества, порядок заказа" />
+          </div>
+          <div className="card !bg-ink-800/60 p-4 space-y-3">
+            <div>
+              <div className="font-semibold text-sm text-slate-200">Предложение по брендам и товарам</div>
+              <div className="text-xs text-slate-500 mt-1">CSV или JSON. Для CSV нужны колонки: brand, name, price; sku, car и stock — дополнительные.</div>
+            </div>
+            <label className="btn-ghost !py-2 text-[13px] w-fit cursor-pointer">
+              <Upload size={14} /> Загрузить CSV / JSON
+              <input type="file" accept=".csv,.json,text/csv,application/json" onChange={handleCatalogUpload} className="hidden" />
+            </label>
+            <div className="text-xs text-slate-400">Позиции: {(supplierDraft.catalogItems || []).length} · Бренды: {[...new Set((supplierDraft.catalogItems || []).map((item: any) => item.brand).filter(Boolean))].join(', ') || 'не загружены'}</div>
           </div>
           <div className="flex justify-end gap-2.5 pt-1">
             <button onClick={() => setSupplierOpen(false)} className="btn-ghost">Отмена</button>
-            <button onClick={handleSaveSupplier} className="btn-primary">Сохранить</button>
+            <button onClick={handleSaveSupplier} className="btn-primary">Сохранить карточку</button>
           </div>
         </div>
       </CenterModal>
