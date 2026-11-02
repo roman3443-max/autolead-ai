@@ -23,10 +23,10 @@ interface Props {
 
 
 function parseLeadCsv(input: string): any[] {
-  const text = input.replace(/^\\uFEFF/, '')
-  const firstLine = text.split(/\\r?\\n/, 1)[0] || ''
+  const text = input.replace(/^\uFEFF/, '')
+  const firstLine = text.split(/\r?\n/, 1)[0] || ''
   const delimiter = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
-    ? ';' : firstLine.includes('\\t') ? '\\t' : ','
+    ? ';' : firstLine.includes('\t') ? '\t' : ','
   const records: string[][] = []
   let row: string[] = [], cell = '', quoted = false
   for (let i = 0; i < text.length; i++) {
@@ -34,8 +34,8 @@ function parseLeadCsv(input: string): any[] {
     if (ch === '"' && quoted && text[i + 1] === '"') { cell += '"'; i++; continue }
     if (ch === '"') { quoted = !quoted; continue }
     if (!quoted && ch === delimiter) { row.push(cell); cell = ''; continue }
-    if (!quoted && (ch === '\\n' || ch === '\\r')) {
-      if (ch === '\\r' && text[i + 1] === '\\n') i++
+    if (!quoted && (ch === '\n' || ch === '\r')) {
+      if (ch === '\r' && text[i + 1] === '\n') i++
       row.push(cell); cell = ''
       if (row.some(value => value.trim())) records.push(row)
       row = []; continue
