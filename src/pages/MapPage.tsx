@@ -257,6 +257,10 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           <FitToLeads leads={withCoords} />
+          <DrawController mode={drawMode} onPoint={handleDrawingPoint} />
+          {drawMode === 'polygon' && drawPoints.length >= 2 && <Polyline positions={drawPoints} pathOptions={{ color: '#A78BFA', weight: 3, dashArray: '6 6' }} />}
+          {drawMode === 'polygon' && drawPoints.length >= 3 && <Polygon positions={drawPoints} pathOptions={{ color: '#A78BFA', fillColor: '#8B5CF6', fillOpacity: 0.12, weight: 1 }} />}
+          {pendingShape && <Polygon positions={pendingShape.ring.map(([lng, lat]) => [lat, lng] as [number, number])} pathOptions={{ color: sectorDraft.color, fillColor: sectorDraft.color, fillOpacity: 0.18, weight: 3, dashArray: '6 5' }} />}
           {sectors.map((sec: any) => (
             <Polygon
               key={sec.id}
@@ -291,6 +295,38 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
           </div>
         )}
       </div>
+      <CenterModal open={Boolean(pendingShape)} onClose={() => { if (!sectorBusy) { setPendingShape(null); setSectorError('') } }} title="Новый сектор" width="max-w-lg">
+        {pendingShape && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-400">
+              Форма: {pendingShape.shapeType === 'rectangle' ? 'прямоугольник' : pendingShape.shapeType === 'circle' ? 'круг' : 'замкнутая ломаная область'}.
+              {pendingShape.shapeType === 'circle' && ' Круг сохраняется как приближённая граница области.'}
+            </p>
+            <div>
+              <label className="label">Название сектора</label>
+              <input value={sectorDraft.name} onChange={e => setSectorDraft({ ...sectorDraft, name: e.target.value })} className="input" placeholder="Например, Север города" />
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label className="label">Ответственный менеджер</label>
+                <select value={sectorDraft.manager_id} onChange={e => setSectorDraft({ ...sectorDraft, manager_id: e.target.value })} className="input">
+                  <option value="">Не назначен</option>
+                  {managers.map(manager => <option key={manager.id} value={manager.id}>{manager.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Цвет сектора</label>
+                <input type="color" value={sectorDraft.color} onChange={e => setSectorDraft({ ...sectorDraft, color: e.target.value })} className="input h-11 p-1" />
+              </div>
+            </div>
+            {sectorError && <div className="text-sm text-rose-300">{sectorError}</div>}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setPendingShape(null); setSectorError('') }} disabled={sectorBusy} className="btn-ghost">Отмена</button>
+              <button onClick={() => void handleSaveSector()} disabled={sectorBusy} className="btn-primary">{sectorBusy ? 'Сохраняю…' : 'Сохранить сектор'}</button>
+            </div>
+          </div>
+        )}
+      </CenterModal>
     </div>
   )
 }
