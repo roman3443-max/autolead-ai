@@ -319,7 +319,12 @@ async function launchPipelineJob(params: {
   const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
   if (running) return null
 
-  const jobId = `job_${Date.now()}`
+  const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const acquired = await db.jobs.acquirePipelineLock(jobId)
+  if (!acquired) return null
+
+  // После получения lease завершаем статусы задач, оставшиеся без активного владельца.
+  await db.jobs.markStaleRunningAsError(jobId).catch((e: any) => console.error('⚠️ Не удалось обновить прерванные задачи:', e))
   const initial = {
     id: jobId,
     status: 'running',
@@ -329,10 +334,18 @@ async function launchPipelineJob(params: {
     added: 0,
     totalFound: 0,
     message: 'Поиск компаний...',
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    search_task_id: source?.search_task_id
   }
   pipelineJobs[jobId] = initial
-  db.jobs.create(initial).catch(() => {})
+  try {
+    await db.jobs.create(initial)
+  } catch (error) {
+    delete pipelineJobs[jobId]
+    await db.jobs.releasePipelineLock(jobId).catch(() => {})
+    console.error('❌ Не удалось сохранить задачу пайплайна:', error)
+    return null
+  }
   console.log(`📥 Запуск поиска: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
 
   const stageText: Record<string, string> = {
@@ -343,6 +356,15 @@ async function launchPipelineJob(params: {
   }
 
   ;(async () => {
+    const lockHeartbeat = setInterval(async () => {
+      try {
+        const renewed = await db.jobs.renewPipelineLock(jobId)
+        if (!renewed) console.error(`⚠️ Lease задачи ${jobId} потерян; обновление статуса может быть прервано`)
+      } catch (error) {
+        console.error(`⚠️ Не удалось продлить lease задачи ${jobId}:`, error)
+      }
+    }, 60_000)
+
     try {
       const supplierConfig = (await db.settings.get('supplier_config')) || {}
       const supplierName = supplierConfig?.name || 'УралАвтоОпт'
@@ -400,19 +422,25 @@ async function launchPipelineJob(params: {
       const msg = 'Ошибка при запуске пайплайна: ' + String(error)
       await updateJob(jobId, { status: 'error', error: msg })
       onComplete?.({ status: 'error', found: 0, added: 0, error: msg })
+    } finally {
+      clearInterval(lockHeartbeat)
+      await db.jobs.releasePipelineLock(jobId).catch((e: any) => console.error('⚠️ Не удалось освободить lease:', e))
     }
   })()
 
   return { jobId }
 }
 
+async function respondWithActiveJob(res: any) {
+  const active = await db.jobs.getActive()
+  if (!active) return res.status(503).json({ error: 'Не удалось запустить задачу поиска. Попробуйте ещё раз.' })
+  return res.json({ jobId: active.id, alreadyRunning: true })
+}
+
 app.post('/api/run-pipeline', runCooldown, async (req, res) => {
   const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
   const launched = await launchPipelineJob({ city, industry, limit })
-  if (!launched) {
-    const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
-    return res.json({ jobId: (running as any)?.id, alreadyRunning: true })
-  }
+  if (!launched) return respondWithActiveJob(res)
   res.json({ jobId: launched.jobId })
 })
 
@@ -520,10 +548,7 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
     }
   })
 
-  if (!launched) {
-    const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
-    return res.json({ jobId: (running as any)?.id, alreadyRunning: true })
-  }
+  if (!launched) return respondWithActiveJob(res)
 
   await db.tasks.update(task.id, { status: 'running', last_error: undefined })
   res.json({ jobId: launched.jobId })
@@ -550,6 +575,17 @@ async function main() {
 
   const shutdown = async () => {
     console.log('🛑 Остановка...')
+    const active = Object.values(pipelineJobs).find((job: any) => job.status === 'running') as any
+    if (active) {
+      await updateJob(active.id, { status: 'error', error: 'Сервер остановлен во время выполнения задачи' })
+      if (active.search_task_id) {
+        await db.tasks.update(active.search_task_id, {
+          status: 'error',
+          last_error: 'Сервер остановлен во время выполнения задачи'
+        }).catch(() => {})
+      }
+      await db.jobs.releasePipelineLock(active.id).catch(() => {})
+    }
     await closeDb()
     process.exit(0)
   }
