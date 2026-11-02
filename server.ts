@@ -80,6 +80,22 @@ function getLeadDedupeKeys(lead: any): string[] {
   if (company) keys.push(`company:${company}|city:${normalizeLeadText(lead.city)}`)
   return keys
 }
+function pointInRing(lng: number, lat: number, ring: [number, number][]): boolean {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j]
+    const cross = (lng - xi) * (yj - yi) - (lat - yi) * (xj - xi)
+    const onSegment = Math.abs(cross) < 1e-10 &&
+      lng >= Math.min(xi, xj) - 1e-10 && lng <= Math.max(xi, xj) + 1e-10 &&
+      lat >= Math.min(yi, yj) - 1e-10 && lat <= Math.max(yi, yj) + 1e-10
+    if (onSegment) return true
+    const intersects = ((yi > lat) !== (yj > lat)) &&
+      (lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)
+    if (intersects) inside = !inside
+  }
+  return inside
+}
+
 // Безопасное имя файла КП (защита от path traversal)
 const kpFileName = (fileName: any): string | null => {
   if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
@@ -375,26 +391,50 @@ app.get('/api/sectors', async (req, res) => {
 })
 
 app.post('/api/sectors', async (req, res) => {
-  const newSector = { ...req.body, id: `sec_${Date.now()}` }
+  const name = String(req.body?.name || '').trim()
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Название сектора должно быть от 2 до 120 символов' })
+  const rawRing = req.body?.polygon?.geometry?.coordinates?.[0]
+  if (!Array.isArray(rawRing) || rawRing.length < 4 || rawRing.length > 500) {
+    return res.status(400).json({ error: 'Для сектора нужна замкнутая область минимум из 3 вершин' })
+  }
+  const ring: [number, number][] = rawRing.map((point: any) => [Number(point?.[0]), Number(point?.[1])])
+  if (ring.some(([lng, lat]) => !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90)) {
+    return res.status(400).json({ error: 'В секторе обнаружены некорректные координаты' })
+  }
+  if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) ring.push([...ring[0]])
+  const area = ring.slice(1).reduce((sum, point, index) => {
+    const previous = ring[index]
+    return sum + previous[0] * point[1] - point[0] * previous[1]
+  }, 0)
+  if (Math.abs(area) < 1e-10) return res.status(400).json({ error: 'Сектор не образует замкнутую область' })
+
+  const managerId = String(req.body?.manager_id || '')
+  if (managerId && !(await db.managers.list()).some((manager: any) => manager.id === managerId)) {
+    return res.status(400).json({ error: 'Выбранный менеджер не найден' })
+  }
+  const color = /^#[0-9a-f]{6}$/i.test(String(req.body?.color || '')) ? String(req.body.color) : '#6366F1'
+  const newSector = {
+    id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    manager_id: managerId || undefined,
+    color,
+    polygon: {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [ring] },
+      properties: { shape_type: String(req.body?.polygon?.properties?.shape_type || 'polygon') },
+    },
+  }
   await db.sectors.create(newSector)
 
   const leads = await db.leads.list()
+  let assigned = 0
   for (const lead of leads) {
-    if (lead.coordinates && newSector.polygon) {
-      const coords = newSector.polygon.geometry.coordinates[0]
-      const lngs = coords.map((c: any) => c[0])
-      const lats = coords.map((c: any) => c[1])
-      const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
-      const minLat = Math.min(...lats), maxLat = Math.max(...lats)
-      if (
-        lead.coordinates.lng >= minLng && lead.coordinates.lng <= maxLng &&
-        lead.coordinates.lat >= minLat && lead.coordinates.lat <= maxLat
-      ) {
-        await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
-      }
+    if (lead.coordinates && pointInRing(lead.coordinates.lng, lead.coordinates.lat, ring)) {
+      await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
+      assigned++
     }
   }
-  res.json(newSector)
+  res.json({ ...newSector, leadsCount: assigned })
 })
 
 app.get('/api/managers', async (req, res) => {
