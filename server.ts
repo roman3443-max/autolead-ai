@@ -81,9 +81,9 @@ function getLeadDedupeKeys(lead: any): string[] {
   return keys
 }
 function hasValidCoordinates(coordinates: any): boolean {
-  return Boolean(coordinates &&
-    Number.isFinite(Number(coordinates.lat)) && Number.isFinite(Number(coordinates.lng)) &&
-    Math.abs(Number(coordinates.lat)) <= 90 && Math.abs(Number(coordinates.lng)) <= 180)
+  if (!coordinates || coordinates.lat === '' || coordinates.lng === '' || coordinates.lat === null || coordinates.lng === null) return false
+  const lat = Number(coordinates.lat), lng = Number(coordinates.lng)
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180
 }
 
 function pointInRing(lng: number, lat: number, ring: [number, number][]): boolean {
