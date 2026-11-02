@@ -34,8 +34,8 @@ export default function MapPage({ leads, sectors, managers }: Props) {
   const cities = useMemo(() => [...new Set(leads.map(lead => lead.city?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
   const industries = useMemo(() => [...new Set(leads.map(lead => lead.industry?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
   const filteredLeads = useMemo(() => leads.filter(lead =>
-    (cityFilter === 'all' || lead.city === cityFilter) &&
-    (industryFilter === 'all' || lead.industry === industryFilter) &&
+    (cityFilter === 'all' || lead.city?.trim() === cityFilter) &&
+    (industryFilter === 'all' || lead.industry?.trim() === industryFilter) &&
     (statusFilter === 'all' || lead.status === statusFilter)
   ), [leads, cityFilter, industryFilter, statusFilter])
   const withCoords = useMemo(() => filteredLeads.filter(lead =>
@@ -116,6 +116,12 @@ export default function MapPage({ leads, sectors, managers }: Props) {
             </Marker>
           ))}
         </MapContainer>
+        {withCoords.length === 0 && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] rounded-xl border border-line bg-ink-900/95 px-4 py-3 text-sm text-slate-300 shadow-lg text-center">
+            Нет лидов с координатами по выбранным фильтрам
+            {filteredLeads.length > 0 && <div className="text-xs text-slate-500 mt-1">{filteredLeads.length} записей без координат</div>}
+          </div>
+        )}
       </div>
     </div>
   )
