@@ -336,9 +336,10 @@ function extractEmails(content: string): string[] {
   return [...new Set(emails)].filter(e => !e.match(/\.(png|jpg|jpeg|gif|webp|svg)$/i)).slice(0, 5)
 }
 
-function extractBrands(content: string): string[] {
+function extractBrands(content: string, offeredBrands: string[] = []): string[] {
   const known = ['Toyota', 'Nissan', 'Honda', 'Mazda', 'Mitsubishi', 'Bosch', 'Denso', 'TRW', 'ZF', 'Continental', 'LADA', 'ВАЗ', 'ГАЗ', 'УАЗ', 'КАМАЗ', 'Ford', 'Renault', 'Chevrolet']
-  const found = known.filter(b => content.toLowerCase().includes(b.toLowerCase()))
+  const candidates = [...new Set([...known, ...offeredBrands.filter(Boolean)])]
+  const found = candidates.filter(b => content.toLowerCase().includes(b.toLowerCase()))
   return found.length > 0 ? found.slice(0, 6) : ['Автозапчасти']
 }
 
@@ -472,7 +473,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const lpr_emails = siteEmails
       const email_source = siteEmails.length > 0 ? 'website' : 'none'
 
-      const brands = extractBrands(content)
+      const brands = extractBrands(content, catalog.items.map(item => item.brand))
       const matched_brands = getMatchedBrands(brands, catalog)
       const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true)
       const lead_score = calculateLeadScore(scoringCfg, {
