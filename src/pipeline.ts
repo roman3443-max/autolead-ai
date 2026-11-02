@@ -93,8 +93,8 @@ export function loadSearchDefaults(): SearchDefaults {
 }
 
 // --- Каталог поставщика (supplier_catalog.json) ---
-interface CatalogItem { sku: string; brand: string; name: string; car: string; price: number; stock: number }
-interface SupplierCatalog {
+export interface CatalogItem { sku: string; brand: string; name: string; car: string; price: number; stock: number }
+export interface SupplierCatalog {
   supplier_name?: string
   payment_terms?: string
   delivery?: string
@@ -127,7 +127,7 @@ function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems 
 function buildProductsTable(items: CatalogItem[]): string {
   if (!items.length) return ''
   const rows = items
-    .map(i => `<tr><td>${i.brand}</td><td>${i.name}</td><td>${i.car}</td><td>${i.sku}</td><td><b>${i.price.toLocaleString('ru-RU')} ₽</b></td><td>${i.stock} шт.</td></tr>`)
+     .map(i => `<tr><td>${escapeHtml(i.brand)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.car)}</td><td>${escapeHtml(i.sku)}</td><td><b>${Number(i.price || 0).toLocaleString('ru-RU')} ₽</b></td><td>${Number(i.stock || 0)} шт.</td></tr>`)
     .join('\n')
   return `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px">
 <thead><tr><th>Бренд</th><th>Наименование</th><th>Применяемость</th><th>Артикул</th><th>Цена</th><th>Остаток</th></tr></thead>
@@ -518,7 +518,10 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
 }
 
 // --- Этап 3: Генерация КП через Gemini (сохраняем как HTML) ---
-const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c))
+function escapeHtml(value: unknown): string {
+  const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+  return String(value ?? '').replace(/[&<>"']/g, c => entities[c] || c)
+}
 
 // Формирует фактическое КП из карточки поставщика и совпавших товаров без ожидания LLM.
 export async function generateKP(lead: any, supplierInput: any, hooks?: { onKP?: (filename: string, content: string) => void | Promise<void> }) {
