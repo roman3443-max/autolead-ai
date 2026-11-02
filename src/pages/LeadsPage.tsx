@@ -49,7 +49,7 @@ function parseLeadCsv(input: string): any[] {
   const normalize = (value: string) => value.trim().toLowerCase().replace(/ё/g, 'е')
   const headers = records[0].map(normalize)
   const aliases: Record<string, string[]> = {
-    company_name: ['company_name', 'company', 'компания', 'название компании', 'организация'],
+    company_name: ['company_name', 'company name', 'company', 'компания', 'название компании', 'организация', 'название организации'],
     domain: ['domain', 'website', 'site', 'url', 'сайт', 'веб-сайт'],
     city: ['city', 'город', 'населенный пункт'],
     industry: ['industry', 'activity', 'вид деятельности', 'отрасль', 'сфера деятельности'],
