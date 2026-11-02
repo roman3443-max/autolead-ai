@@ -202,7 +202,7 @@ app.put('/api/leads/:id', async (req, res) => {
   if (body.lpr_emails !== undefined) {
     if (!Array.isArray(body.lpr_emails) || body.lpr_emails.length > 10) return res.status(400).json({ error: 'Можно сохранить не более 10 email-адресов' })
     body.lpr_emails = [...new Set(body.lpr_emails.map((email: any) => String(email).trim().toLowerCase()))]
-    if (body.lpr_emails.some((email: string) => !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))) {
+    if (body.lpr_emails.some((email: string) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
       return res.status(400).json({ error: 'Проверьте формат email-адресов' })
     }
     if (!['website', 'import', 'manual', 'none'].includes(body.email_source)) {
