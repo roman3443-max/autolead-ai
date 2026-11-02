@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet'
-import { Map as MapIcon } from 'lucide-react'
+import { Map as MapIcon, LocateFixed, Square, Circle as CircleIcon, PenTool, X, Check } from 'lucide-react'
+import { CenterModal } from '../components/Drawer'
 import L from 'leaflet'
 import { Lead, STATUS_META } from '../lib/types'
 
@@ -8,6 +9,67 @@ interface Props {
   leads: Lead[]
   sectors: any[]
   managers: any[]
+  onGeocodeMissing: (leadIds: string[]) => Promise<any>
+  onCreateSector: (sector: any) => Promise<any>
+}
+
+type DrawMode = 'rectangle' | 'circle' | 'polygon'
+
+interface PendingShape {
+  shapeType: DrawMode
+  ring: [number, number][]
+}
+
+function DrawController({ mode, onPoint }: { mode: DrawMode | null; onPoint: (point: L.LatLng) => void }) {
+  const map = useMapEvents({
+    click(event) {
+      if (mode) onPoint(event.latlng)
+    },
+  })
+
+  useEffect(() => {
+    if (mode) {
+      map.doubleClickZoom.disable()
+      map.getContainer().style.cursor = 'crosshair'
+    } else {
+      map.doubleClickZoom.enable()
+      map.getContainer().style.cursor = ''
+    }
+    return () => {
+      map.doubleClickZoom.enable()
+      map.getContainer().style.cursor = ''
+    }
+  }, [map, mode])
+
+  return null
+}
+
+function closedRing(points: L.LatLng[]): [number, number][] {
+  const coords = points.map(point => [point.lng, point.lat] as [number, number])
+  if (coords.length && (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1])) {
+    coords.push([...coords[0]])
+  }
+  return coords
+}
+
+function rectangleRing(first: L.LatLng, second: L.LatLng): [number, number][] {
+  const west = Math.min(first.lng, second.lng), east = Math.max(first.lng, second.lng)
+  const south = Math.min(first.lat, second.lat), north = Math.max(first.lat, second.lat)
+  return [[west, south], [east, south], [east, north], [west, north], [west, south]]
+}
+
+function circleRing(center: L.LatLng, edge: L.LatLng, steps = 48): [number, number][] {
+  const radius = center.distanceTo(edge)
+  const latScale = radius / 111320
+  const cosLatitude = Math.max(0.1, Math.cos(center.lat * Math.PI / 180))
+  const lngScale = radius / (111320 * cosLatitude)
+  const ring: [number, number][] = []
+  for (let i = 0; i < steps; i++) {
+    const angle = (2 * Math.PI * i) / steps
+    ring.push([center.lng + lngScale * Math.cos(angle), center.lat + latScale * Math.sin(angle)])
+  }
+  ring.push([...ring[0]])
+  return ring
 }
 
 function FitToLeads({ leads }: { leads: Lead[] }) {
@@ -26,7 +88,7 @@ function FitToLeads({ leads }: { leads: Lead[] }) {
   return null
 }
 
-export default function MapPage({ leads, sectors, managers }: Props) {
+export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onCreateSector }: Props) {
   const mapRef = useRef<L.Map | null>(null)
   const [cityFilter, setCityFilter] = useState('all')
   const [industryFilter, setIndustryFilter] = useState('all')
