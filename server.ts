@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
-import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems } from './src/pipeline.ts'
+import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
 import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
 
@@ -99,6 +99,36 @@ app.use('/api', authMiddleware)
 // ---------- leads ----------
 app.get('/api/leads', async (req, res) => {
   res.json(await db.leads.list())
+})
+
+app.post('/api/leads/geocode-missing', async (req, res) => {
+  const rawIds = req.body?.leadIds
+  if (!Array.isArray(rawIds) || rawIds.length === 0) return res.status(400).json({ error: 'Не выбраны лиды для поиска координат' })
+  if (rawIds.length > 50) return res.status(400).json({ error: 'За один запуск можно обработать не более 50 лидов' })
+  const ids = new Set(rawIds.map((id: any) => String(id)).filter(Boolean))
+  try {
+    const allLeads = await db.leads.list()
+    const candidates = allLeads.filter((lead: any) => ids.has(String(lead.id)) && !lead.coordinates)
+    let geocoded = 0
+    let failed = 0
+    for (const lead of candidates) {
+      const coordinates = await getCoordinates(String(lead.company_name || ''), String(lead.city || ''), true, String(lead.address || ''))
+      if (!coordinates) {
+        failed++
+        continue
+      }
+      await db.leads.update(lead.id, {
+        coordinates: { lat: coordinates.lat, lng: coordinates.lng },
+        coordinate_source: 'nominatim',
+      })
+      geocoded++
+    }
+    const remaining = allLeads.filter((lead: any) => ids.has(String(lead.id)) && !lead.coordinates && !candidates.some((candidate: any) => candidate.id === lead.id)).length + failed
+    res.json({ requested: ids.size, processed: candidates.length, geocoded, failed, remaining })
+  } catch (error) {
+    console.error('❌ Ошибка геокодирования лидов:', error)
+    res.status(500).json({ error: 'Не удалось найти координаты для выбранных лидов' })
+  }
 })
 
 app.post('/api/leads/import', async (req, res) => {
