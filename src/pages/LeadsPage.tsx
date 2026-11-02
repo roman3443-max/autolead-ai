@@ -1,4 +1,6 @@
-import { Search, Download, Inbox, Copy, FileDown, Users, Sparkles, Briefcase } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Search, Download, Inbox, Copy, FileDown, Users, Sparkles, Briefcase, Upload } from 'lucide-react'
+import { CenterModal } from '../components/Drawer'
 import { Lead, STATUS_META, TIER_META, SIZE_LABELS } from '../lib/types'
 import StatCard, { StatSkeleton } from '../components/StatCard'
 
@@ -14,7 +16,66 @@ interface Props {
   onCopyLetter: (lead: Lead) => void
   onDownloadPDF: (lead: Lead) => void
   onExportCSV: () => void
+  onPreviewImport: (rows: any[], sourceName: string) => Promise<any>
+  onCommitImport: (rows: any[], sourceName: string) => Promise<any>
   onStatusChange: (leadId: string, status: string) => void
+}
+
+
+function parseLeadCsv(input: string): any[] {
+  const text = input.replace(/^\\uFEFF/, '')
+  const firstLine = text.split(/\\r?\\n/, 1)[0] || ''
+  const delimiter = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
+    ? ';' : firstLine.includes('\\t') ? '\\t' : ','
+  const records: string[][] = []
+  let row: string[] = [], cell = '', quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '"' && quoted && text[i + 1] === '"') { cell += '"'; i++; continue }
+    if (ch === '"') { quoted = !quoted; continue }
+    if (!quoted && ch === delimiter) { row.push(cell); cell = ''; continue }
+    if (!quoted && (ch === '\\n' || ch === '\\r')) {
+      if (ch === '\\r' && text[i + 1] === '\\n') i++
+      row.push(cell); cell = ''
+      if (row.some(value => value.trim())) records.push(row)
+      row = []; continue
+    }
+    cell += ch
+  }
+  row.push(cell)
+  if (row.some(value => value.trim())) records.push(row)
+  if (records.length < 2) throw new Error('CSV должен содержать заголовок и хотя бы одну строку')
+  if (records.length > 1001) throw new Error('За один раз можно загрузить не более 1000 строк')
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/ё/g, 'е')
+  const headers = records[0].map(normalize)
+  const aliases: Record<string, string[]> = {
+    company_name: ['company_name', 'company', 'компания', 'название компании', 'организация'],
+    domain: ['domain', 'website', 'site', 'url', 'сайт', 'веб-сайт'],
+    city: ['city', 'город', 'населенный пункт'],
+    industry: ['industry', 'activity', 'вид деятельности', 'отрасль', 'сфера деятельности'],
+    address: ['address', 'адрес'],
+    phone: ['phone', 'telephone', 'телефон'],
+    email: ['email', 'e-mail', 'email компании', 'почта'],
+    brands: ['brands', 'бренды', 'марки'],
+    lpr_name: ['lpr_name', 'лпр', 'контактное лицо', 'имя контакта'],
+    lpr_position: ['lpr_position', 'должность', 'позиция'],
+    lat: ['lat', 'latitude', 'широта'],
+    lng: ['lng', 'lon', 'longitude', 'долгота'],
+  }
+  const indexes = Object.fromEntries(Object.entries(aliases).map(([key, names]) =>
+    [key, headers.findIndex(header => names.includes(header))]
+  ))
+  if (indexes.company_name < 0) throw new Error('Не найдена обязательная колонка «Компания» или company_name')
+  return records.slice(1).map(record => {
+    const value = (key: string) => indexes[key] < 0 ? '' : String(record[indexes[key]] || '').trim()
+    const numberOrUndefined = (raw: string) => raw ? Number(raw.replace(',', '.')) : undefined
+    return {
+      company_name: value('company_name'), domain: value('domain'), city: value('city'),
+      industry: value('industry'), address: value('address'), phone: value('phone'), email: value('email'),
+      brands: value('brands'), lpr_name: value('lpr_name'), lpr_position: value('lpr_position'),
+      lat: numberOrUndefined(value('lat')), lng: numberOrUndefined(value('lng')),
+    }
+  })
 }
 
 function LprAvatar({ name }: { name: string }) {
@@ -27,6 +88,38 @@ function LprAvatar({ name }: { name: string }) {
 }
 
 export default function LeadsPage(p: Props) {
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [importRows, setImportRows] = useState<any[]>([])
+  const [importSource, setImportSource] = useState('')
+  const [importPreview, setImportPreview] = useState<any>(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importError, setImportError] = useState('')
+
+  const handleImportFile = async (file?: File) => {
+    if (!file) return
+    setImportBusy(true); setImportError(''); setImportPreview(null)
+    try {
+      const rows = parseLeadCsv(await file.text())
+      const preview = await p.onPreviewImport(rows, file.name)
+      setImportRows(rows); setImportSource(file.name); setImportPreview(preview)
+    } catch (error: any) {
+      setImportError(error?.message || 'Не удалось прочитать CSV')
+    } finally {
+      setImportBusy(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
+
+  const handleCommitImport = async () => {
+    if (!importRows.length || !importSource) return
+    setImportBusy(true); setImportError('')
+    try {
+      await p.onCommitImport(importRows, importSource)
+      setImportPreview(null); setImportRows([]); setImportSource('')
+    } catch (error: any) {
+      setImportError(error?.message || 'Импорт не выполнен')
+    } finally { setImportBusy(false) }
+  }
   const counts = {
     total: p.leads.length,
     fresh: p.leads.filter(l => l.status === 'new').length,
@@ -69,6 +162,10 @@ export default function LeadsPage(p: Props) {
             <div className="text-[13px] text-slate-500 ml-auto">
               Найдено: <span className="text-slate-200 font-semibold tabular-nums">{p.filteredLeads.length}</span> из {p.leads.length}
             </div>
+            <button onClick={() => fileInput.current?.click()} disabled={importBusy} className="btn-ghost !py-2 text-[13px]">
+              <Upload size={14} /> Импорт CSV
+            </button>
+            <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={e => void handleImportFile(e.target.files?.[0])} className="hidden" />
             <button onClick={p.onExportCSV} className="btn-ghost !py-2 text-[13px]">
               <Download size={14} /> Экспорт CSV
             </button>
@@ -200,6 +297,48 @@ export default function LeadsPage(p: Props) {
           </div>
         )}
       </div>
+      <CenterModal open={Boolean(importPreview)} onClose={() => { if (!importBusy) { setImportPreview(null); setImportError('') } }} title="Импорт внешних лидов" width="max-w-2xl">
+        {importPreview && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-400">Файл: <span className="text-slate-200">{importSource}</span>. Импортируем с пересчётом скоринга и проверкой дублей.</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                ['Строк', importPreview.total], ['К импорту', importPreview.importable],
+                ['Дубли', importPreview.duplicates], ['Ошибки', importPreview.invalid],
+              ].map(([label, value]) => (
+                <div key={label} className="card !bg-ink-800/60 p-3">
+                  <div className="text-xs text-slate-500">{label}</div>
+                  <div className="text-lg font-bold text-white">{value}</div>
+                </div>
+              ))}
+            </div>
+            {!!importPreview.newPreview?.length && <div>
+              <div className="label">Новые лиды (показаны первые 20)</div>
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-line divide-y divide-line/60">
+                {importPreview.newPreview.map((lead: any) => <div key={lead.row} className="px-3 py-2 text-xs text-slate-300 flex justify-between gap-3">
+                  <span>{lead.company_name}{lead.city ? ` · ${lead.city}` : ''}{lead.industry ? ` · ${lead.industry}` : ''}</span>
+                  <span className="shrink-0">Скор {lead.lead_score} · {lead.lead_tier}</span>
+                </div>)}
+              </div>
+            </div>}
+            {!!importPreview.duplicatePreview?.length && <div>
+              <div className="label">Дубли (показаны первые 20)</div>
+              <div className="text-xs text-slate-500">{importPreview.duplicatePreview.map((row: any) => row.company_name).join(' · ')}</div>
+            </div>}
+            {!!importPreview.invalidRows?.length && <div>
+              <div className="label">Строки с ошибками</div>
+              <div className="max-h-24 overflow-y-auto text-xs text-amber-300">{importPreview.invalidRows.slice(0, 20).map((row: any) => `Строка ${row.row}: ${row.reason}`).join(' · ')}</div>
+            </div>}
+            {importError && <div className="text-sm text-rose-300">{importError}</div>}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setImportPreview(null); setImportError('') }} disabled={importBusy} className="btn-ghost">Отмена</button>
+              <button onClick={() => void handleCommitImport()} disabled={importBusy || !importPreview.importable} className="btn-primary">
+                {importBusy ? 'Обработка...' : `Импортировать ${importPreview.importable}`}
+              </button>
+            </div>
+          </div>
+        )}
+      </CenterModal>
     </div>
   )
 }
