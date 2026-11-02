@@ -380,7 +380,11 @@ app.get('/api/analytics', async (req, res) => {
     total: leads.length,
     new: leads.filter((l: any) => l.status === 'new').length,
     in_progress: leads.filter((l: any) => l.status === 'in_progress').length,
+    proposal_ready: leads.filter((l: any) => l.status === 'proposal_ready').length,
+    contacted: leads.filter((l: any) => l.status === 'contacted').length,
     converted: leads.filter((l: any) => l.status === 'converted').length,
+    not_target: leads.filter((l: any) => l.status === 'not_target').length,
+    blacklisted: leads.filter((l: any) => l.status === 'blacklisted').length,
     managers: managers.map((m: any) => ({
       ...m,
       leadsCount: leads.filter((l: any) => l.assigned_manager_id === m.id).length,
