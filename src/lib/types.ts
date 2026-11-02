@@ -69,6 +69,7 @@ export interface Toast {
 
 export const STATUS_META: Record<string, { label: string; color: string; bg: string; dot: string }> = {
   new:         { label: 'Новый',        color: 'text-slate-300',   bg: 'bg-slate-500/10',   dot: 'bg-slate-400' },
+  proposal_ready: { label: 'КП подготовлено', color: 'text-cyan-300', bg: 'bg-cyan-500/10', dot: 'bg-cyan-400' },
   contacted:   { label: 'КП отправлено', color: 'text-sky-300',    bg: 'bg-sky-500/10',    dot: 'bg-sky-400' },
   in_progress: { label: 'В работе',      color: 'text-violet-300', bg: 'bg-violet-500/10', dot: 'bg-violet-400' },
   not_target:  { label: 'Не целевой',    color: 'text-amber-300',  bg: 'bg-amber-500/10',  dot: 'bg-amber-400' },
