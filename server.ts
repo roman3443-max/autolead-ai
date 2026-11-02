@@ -172,7 +172,47 @@ app.post('/api/leads/import', async (req, res) => {
   }
 })
 app.put('/api/leads/:id', async (req, res) => {
-  const body = { ...req.body }
+  const body: any = { ...req.body }
+  if (body.company_name !== undefined) {
+    body.company_name = String(body.company_name || '').trim()
+    if (body.company_name.length < 2 || body.company_name.length > 200) {
+      return res.status(400).json({ error: 'Название компании должно быть от 2 до 200 символов' })
+    }
+  }
+  if (body.domain !== undefined) {
+    const rawDomain = String(body.domain || '').trim()
+    const normalizedDomain = rawDomain ? normalizeLeadDomain(rawDomain) : ''
+    if (rawDomain && !normalizedDomain) return res.status(400).json({ error: 'Укажите корректный сайт или домен' })
+    body.domain = normalizedDomain
+  }
+  for (const [field, limit] of [['city', 100], ['industry', 120], ['address', 250], ['phone', 80]] as [string, number][]) {
+    if (body[field] !== undefined) {
+      body[field] = String(body[field] || '').trim()
+      if (body[field].length > limit) return res.status(400).json({ error: `Поле "${field}" не должно превышать ${limit} символов` })
+    }
+  }
+  if (body.lpr !== undefined) {
+    if (!Array.isArray(body.lpr) || body.lpr.length > 5) return res.status(400).json({ error: 'Можно сохранить не более 5 контактных лиц' })
+    body.lpr = body.lpr.map((person: any) => ({
+      name: String(person?.name || '').trim().slice(0, 120),
+      position: String(person?.position || '').trim().slice(0, 120),
+      evidence: String(person?.evidence || '').trim().slice(0, 1000),
+    })).filter((person: any) => person.name)
+  }
+  if (body.lpr_emails !== undefined) {
+    if (!Array.isArray(body.lpr_emails) || body.lpr_emails.length > 10) return res.status(400).json({ error: 'Можно сохранить не более 10 email-адресов' })
+    body.lpr_emails = [...new Set(body.lpr_emails.map((email: any) => String(email).trim().toLowerCase()))]
+    if (body.lpr_emails.some((email: string) => !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))) {
+      return res.status(400).json({ error: 'Проверьте формат email-адресов' })
+    }
+    if (!['website', 'import', 'manual', 'none'].includes(body.email_source)) {
+      body.email_source = body.lpr_emails.length ? 'manual' : 'none'
+    }
+  }
+  if (body.brands !== undefined) {
+    if (!Array.isArray(body.brands) || body.brands.length > 30) return res.status(400).json({ error: 'Можно сохранить не более 30 брендов' })
+    body.brands = [...new Set(body.brands.map((brand: any) => String(brand).trim().slice(0, 100)).filter(Boolean))]
+  }
   if (body.pdf_file !== undefined) {
     if (body.pdf_file === null || body.pdf_file === '') {
       body.pdf_file = null
