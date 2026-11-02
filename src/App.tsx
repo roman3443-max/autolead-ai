@@ -829,6 +829,8 @@ export default function App() {
                         ? 'Найден в тексте сайта; принадлежность конкретному ЛПР и актуальность не проверены.'
                         : selectedLead.email_source === 'import'
                         ? 'Email загружен из внешнего файла; проверьте актуальность перед использованием.'
+                        : selectedLead.email_source === 'manual'
+                        ? 'Email внесён менеджером вручную.'
                         : 'Источник email в старой записи неизвестен; проверьте адрес перед использованием.'}
                     </div>
                     {selectedLead.lpr_emails.map((email, i) => (
