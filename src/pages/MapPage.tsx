@@ -28,7 +28,7 @@ function FitToLeads({ leads }: { leads: Lead[] }) {
 
 export default function MapPage({ leads, sectors, managers }: Props) {
   const mapRef = useRef<L.Map | null>(null)
-  const withCoords = useMemo(() => leads.filter(l => l.coordinates && l.coordinate_source === 'nominatim'), [leads])
+  const withCoords = useMemo(() => leads.filter(l => l.coordinates && ['nominatim', 'import'].includes(l.coordinate_source || '')), [leads])
   const withoutGeocoding = leads.length - withCoords.length
 
   useEffect(() => {
@@ -44,7 +44,7 @@ export default function MapPage({ leads, sectors, managers }: Props) {
             <MapIcon size={18} className="text-indigo-400" /> Карта лидов и секторов
           </h1>
           <p className="text-[13px] text-slate-500 mt-0.5">
-            {sectors.length} секторов · {withCoords.length} лидов с координатами из Nominatim · {withoutGeocoding} без результата геокодирования
+            {sectors.length} секторов · {withCoords.length} лидов с координатами (геокодинг или импорт) · {withoutGeocoding} без координат
           </p>
         </div>
       </div>
@@ -76,7 +76,7 @@ export default function MapPage({ leads, sectors, managers }: Props) {
             <Marker key={lead.id} position={[lead.coordinates!.lat, lead.coordinates!.lng]}>
               <Popup>
                 <b>{lead.company_name}</b><br />
-                {lead.city}<br />
+                {lead.city}{lead.industry ? ` · ${lead.industry}` : ''}<br />
                 Скор: {lead.lead_score} · Tier {lead.lead_tier}
               </Popup>
             </Marker>
