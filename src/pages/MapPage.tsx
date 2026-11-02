@@ -93,6 +93,14 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
   const [cityFilter, setCityFilter] = useState('all')
   const [industryFilter, setIndustryFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [drawMode, setDrawMode] = useState<DrawMode | null>(null)
+  const [drawPoints, setDrawPoints] = useState<L.LatLng[]>([])
+  const [pendingShape, setPendingShape] = useState<PendingShape | null>(null)
+  const [sectorDraft, setSectorDraft] = useState({ name: '', manager_id: '', color: '#6366F1' })
+  const [sectorBusy, setSectorBusy] = useState(false)
+  const [sectorError, setSectorError] = useState('')
+  const [geocodeBusy, setGeocodeBusy] = useState(false)
+  const [geocodeError, setGeocodeError] = useState('')
   const cities = useMemo(() => [...new Set(leads.map(lead => lead.city?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
   const industries = useMemo(() => [...new Set(leads.map(lead => lead.industry?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
   const filteredLeads = useMemo(() => leads.filter(lead =>
@@ -104,6 +112,81 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
     lead.coordinates && ['nominatim', 'import'].includes(lead.coordinate_source || '')
   ), [filteredLeads])
   const withoutGeocoding = filteredLeads.length - withCoords.length
+  const missingLeadIds = filteredLeads.filter(lead => !lead.coordinates).map(lead => lead.id)
+
+  const startDrawing = (mode: DrawMode) => {
+    setPendingShape(null)
+    setDrawPoints([])
+    setDrawMode(mode)
+    setSectorError('')
+  }
+
+  const handleDrawingPoint = (point: L.LatLng) => {
+    if (!drawMode) return
+    const next = [...drawPoints, point]
+    if (drawMode === 'polygon') {
+      setDrawPoints(next)
+      return
+    }
+    if (next.length < 2) {
+      setDrawPoints(next)
+      return
+    }
+    const ring = drawMode === 'rectangle'
+      ? rectangleRing(next[0], next[1])
+      : circleRing(next[0], next[1])
+    setPendingShape({ shapeType: drawMode, ring })
+    setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
+    setDrawMode(null)
+    setDrawPoints([])
+  }
+
+  const finishPolygon = () => {
+    if (drawPoints.length < 3) {
+      setSectorError('Отметьте на карте минимум 3 вершины области')
+      return
+    }
+    setPendingShape({ shapeType: 'polygon', ring: closedRing(drawPoints) })
+    setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
+    setDrawMode(null)
+    setDrawPoints([])
+    setSectorError('')
+  }
+
+  const cancelDrawing = () => { setDrawMode(null); setDrawPoints([]); setSectorError('') }
+
+  const handleGeocodeClick = async () => {
+    setGeocodeBusy(true); setGeocodeError('')
+    try {
+      await onGeocodeMissing(missingLeadIds)
+    } catch (error: any) {
+      setGeocodeError(error?.message || 'Не удалось найти координаты')
+    } finally { setGeocodeBusy(false) }
+  }
+
+  const handleSaveSector = async () => {
+    if (!pendingShape || !sectorDraft.name.trim()) {
+      setSectorError('Введите название сектора')
+      return
+    }
+    setSectorBusy(true); setSectorError('')
+    try {
+      await onCreateSector({
+        name: sectorDraft.name.trim(),
+        manager_id: sectorDraft.manager_id || undefined,
+        color: sectorDraft.color,
+        polygon: {
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [pendingShape.ring] },
+          properties: { shape_type: pendingShape.shapeType },
+        },
+      })
+      setPendingShape(null)
+      setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
+    } catch (error: any) {
+      setSectorError(error?.message || 'Не удалось сохранить сектор')
+    } finally { setSectorBusy(false) }
+  }
 
   useEffect(() => {
     const t = setTimeout(() => { mapRef.current?.invalidateSize() }, 150)
