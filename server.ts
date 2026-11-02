@@ -258,9 +258,9 @@ app.get('/api/leads/export', async (req, res) => {
     new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
     not_target: 'Не целевой', blacklisted: 'Чёрный список', converted: 'Клиент'
   }
-  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Источник ЛПР', 'Цитата ЛПР', 'Email компании', 'Источник email', 'Бренды', 'Размер', 'Опт', 'Источник задачи', 'Комментарии']
+  const header = ['Компания', 'Сайт', 'Город', 'Вид деятельности', 'Адрес', 'Телефон', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Источник ЛПР', 'Цитата ЛПР', 'Email компании', 'Источник email', 'Бренды', 'Размер', 'Опт', 'Источник задачи', 'Комментарии']
   const rows = leads.map((l: any) => [
-    l.company_name, l.domain, l.city, l.address || '',
+    l.company_name, l.domain, l.city, l.industry || '', l.address || '', l.phone || '',
     l.lead_score, l.lead_tier, statusText[l.status] || l.status,
     (l.lpr || []).map((p: any) => p.name).join('; '),
     (l.lpr || []).map((p: any) => p.position).join('; '),
