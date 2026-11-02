@@ -486,7 +486,8 @@ export default function App() {
       if (!res.ok) { toast(data.error || 'Не удалось сформировать КП', 'error'); return }
       setLeads(prev => prev.map(item => item.id === lead.id ? data : item))
       setSelectedLead(prev => prev?.id === lead.id ? data : prev)
-      toast('КП сформировано. Его можно открыть из карточки лида.', 'success')
+      loadData()
+      toast('КП сформировано. Этап обновлён, КП можно открыть из карточки лида.', 'success')
     } catch {
       toast('Ошибка соединения с сервером при формировании КП', 'error')
     } finally {
