@@ -14,7 +14,7 @@ export interface Lead {
   coordinate_source?: 'nominatim' | 'import'
   lpr: Lpr[]
   lpr_emails: string[]
-  email_source?: 'website' | 'import' | 'none'
+  email_source?: 'website' | 'import' | 'manual' | 'none'
   brands: string[]
   matched_brands?: string[]
   lead_score: number
