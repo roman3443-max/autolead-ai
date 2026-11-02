@@ -278,7 +278,7 @@ app.get('/api/leads/export', async (req, res) => {
     (l.lpr || []).length === 0 ? 'Не найден' : (l.lpr || []).every((p: any) => p.evidence) ? 'Есть цитата источника' : 'Источник не сохранён; проверить',
     (l.lpr || []).map((p: any) => p.evidence || '').filter(Boolean).join('; '),
     (l.lpr_emails || []).join('; '),
-    l.email_source === 'website' ? 'Найден на сайте; не привязан к ЛПР' : l.email_source === 'none' ? 'Не найден' : 'Источник неизвестен; проверить',
+    l.email_source === 'website' ? 'Найден на сайте; не привязан к ЛПР' : l.email_source === 'import' ? 'Импортирован; проверить' : l.email_source === 'manual' ? 'Введён вручную' : l.email_source === 'none' ? 'Не найден' : 'Источник неизвестен; проверить',
     (l.brands || []).join('; '),
     l.business_size || '', l.wholesale ? 'да' : 'нет',
     l.search_task_name || 'Ручной импорт',
