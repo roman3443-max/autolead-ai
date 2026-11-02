@@ -117,6 +117,9 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
+  const [leadEditMode, setLeadEditMode] = useState(false)
+  const [leadEditDraft, setLeadEditDraft] = useState<any>(null)
+  const [leadSaveBusy, setLeadSaveBusy] = useState(false)
   const [newComment, setNewComment] = useState('')
 
   const [supplier, setSupplier] = useState<any>(() => {
@@ -376,6 +379,61 @@ export default function App() {
     } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
+  const handleOpenLead = (lead: Lead) => {
+    setLeadEditMode(false)
+    setLeadEditDraft(null)
+    setSelectedLead(lead)
+  }
+
+  const beginLeadEdit = (lead: Lead) => {
+    setLeadEditDraft({
+      company_name: lead.company_name || '', domain: lead.domain || '', city: lead.city || '',
+      industry: lead.industry || '', address: lead.address || '', phone: lead.phone || '',
+      emails: (lead.lpr_emails || []).join('; '), brands: (lead.brands || []).join('; '),
+      lprName: lead.lpr?.[0]?.name || '', lprPosition: lead.lpr?.[0]?.position || '',
+    })
+    setLeadEditMode(true)
+  }
+
+  const handleSaveLeadDetails = async () => {
+    if (!selectedLead || !leadEditDraft) return
+    const company_name = String(leadEditDraft.company_name || '').trim()
+    if (company_name.length < 2) { toast('Укажите название компании', 'error'); return }
+    const emails = [...new Set(String(leadEditDraft.emails || '').split(/[;,|\\n]/).map((value: string) => value.trim().toLowerCase()).filter(Boolean))]
+    if (emails.some((email: string) => !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))) {
+      toast('Проверьте формат email или разделите адреса точкой с запятой', 'error')
+      return
+    }
+    const brands = [...new Set(String(leadEditDraft.brands || '').split(/[;,|\\n]/).map((value: string) => value.trim()).filter(Boolean))]
+    const lprName = String(leadEditDraft.lprName || '').trim()
+    const lpr = lprName
+      ? [{ ...(selectedLead.lpr?.[0] || {}), name: lprName, position: String(leadEditDraft.lprPosition || '').trim(), evidence: '' }, ...(selectedLead.lpr || []).slice(1)]
+      : (selectedLead.lpr || []).slice(1)
+    const emailSource = JSON.stringify(emails) === JSON.stringify(selectedLead.lpr_emails || [])
+      ? selectedLead.email_source
+      : emails.length ? 'manual' : 'none'
+    setLeadSaveBusy(true)
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/${selectedLead.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          company_name, domain: String(leadEditDraft.domain || '').trim(),
+          city: String(leadEditDraft.city || '').trim(), industry: String(leadEditDraft.industry || '').trim(),
+          address: String(leadEditDraft.address || '').trim(), phone: String(leadEditDraft.phone || '').trim(),
+          lpr, lpr_emails: emails, email_source: emailSource, brands,
+        })
+      })
+      const updated = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(updated.error || 'Не удалось сохранить карточку')
+      setSelectedLead(updated)
+      setLeadEditDraft(null); setLeadEditMode(false)
+      await loadData()
+      toast('Карточка лида обновлена', 'success')
+    } catch (error: any) {
+      toast(error?.message || 'Ошибка соединения с сервером', 'error')
+    } finally { setLeadSaveBusy(false) }
+  }
+
   const buildLetter = (lead: Lead) => {
     const topBrands = lead.brands.slice(0, 3).join(', ')
     const subject = `Коммерческое предложение для ${lead.company_name}${topBrands ? ' | ' + topBrands : ''}`
@@ -630,7 +688,7 @@ export default function App() {
             statusFilter={statusFilter}
             setStatusFilter={setStatusFilter}
             filteredLeads={filteredLeads}
-            onOpenLead={setSelectedLead}
+            onOpenLead={handleOpenLead}
             onCopyLetter={handleCopyLetter}
             onDownloadPDF={handleDownloadPDF}
             onExportCSV={handleExportCSV}
@@ -645,9 +703,46 @@ export default function App() {
       </main>
 
       {/* Drawer лида */}
-      <Drawer open={Boolean(selectedLead)} onClose={() => setSelectedLead(null)} title={selectedLead?.company_name}>
+      <Drawer open={Boolean(selectedLead)} onClose={() => { setSelectedLead(null); setLeadEditMode(false); setLeadEditDraft(null) }} title={selectedLead?.company_name}>
         {selectedLead && (
           <div className="space-y-7">
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="label !mb-0">Данные компании и контакты</div>
+                {leadEditMode ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => { setLeadEditMode(false); setLeadEditDraft(null) }} disabled={leadSaveBusy} className="btn-ghost !py-1.5 text-xs">Отмена</button>
+                    <button onClick={() => void handleSaveLeadDetails()} disabled={leadSaveBusy} className="btn-primary !py-1.5 text-xs">{leadSaveBusy ? 'Сохраняю...' : 'Сохранить'}</button>
+                  </div>
+                ) : (
+                  <button onClick={() => beginLeadEdit(selectedLead)} className="btn-ghost !py-1.5 text-xs">Редактировать</button>
+                )}
+              </div>
+              {leadEditMode && leadEditDraft && (
+                <div className="card !bg-ink-800/60 p-4 space-y-3">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {([
+                      ['company_name', 'Компания'], ['domain', 'Сайт или домен'], ['city', 'Город'],
+                      ['industry', 'Вид деятельности'], ['address', 'Адрес'], ['phone', 'Телефон'],
+                      ['lprName', 'Контактное лицо / ЛПР'], ['lprPosition', 'Должность'],
+                    ] as [string, string][]).map(([key, label]) => (
+                      <div key={key}>
+                        <label className="label">{label}</label>
+                        <input value={leadEditDraft[key] || ''} onChange={e => setLeadEditDraft({ ...leadEditDraft, [key]: e.target.value })} className="input" />
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <label className="label">Email (несколько адресов разделяйте точкой с запятой)</label>
+                    <input value={leadEditDraft.emails} onChange={e => setLeadEditDraft({ ...leadEditDraft, emails: e.target.value })} className="input" />
+                  </div>
+                  <div>
+                    <label className="label">Бренды (разделяйте точкой с запятой)</label>
+                    <input value={leadEditDraft.brands} onChange={e => setLeadEditDraft({ ...leadEditDraft, brands: e.target.value })} className="input" />
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               {[
                 ['Сайт', selectedLead.domain || '—'],
