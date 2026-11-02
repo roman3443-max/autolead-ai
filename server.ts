@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
-import { runPipeline, generateKP, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
+import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
 import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
 
@@ -48,6 +48,16 @@ const runCooldown = (req: any, res: any, next: any) => {
   next()
 }
 
+function getSupplierCatalog(profile: any = {}) {
+  const fallback = loadCatalog()
+  return {
+    ...fallback,
+    supplier_name: profile.name || fallback.supplier_name || 'УралАвтоОпт',
+    payment_terms: profile.payment_terms || fallback.payment_terms || '',
+    delivery: profile.delivery || fallback.delivery || '',
+    items: Array.isArray(profile.catalogItems) ? profile.catalogItems : fallback.items,
+  }
+}
 // Безопасное имя файла КП (защита от path traversal)
 const kpFileName = (fileName: any): string | null => {
   if (typeof fileName !== 'string' || fileName.length === 0 || fileName.length > 120) return null
@@ -89,18 +99,20 @@ app.post('/api/leads/:id/generate-kp', async (req, res) => {
   if (!lead) return res.status(404).json({ error: 'Лид не найден' })
   let stored = false
   try {
-    const supplierConfig = (await db.settings.get('supplier_config')) || {}
-    const supplierName = supplierConfig?.name || 'УралАвтоОпт'
-    const filename = await generateKP(lead, supplierName, {
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const catalog = getSupplierCatalog(supplier)
+    const matched_skus = matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog)
+    const proposalLead = { ...lead, matched_skus, matched_brands: [...new Set(matched_skus.map(item => item.brand))] }
+    const filename = await generateKP(proposalLead, { ...supplier, name: supplier.name || catalog.supplier_name, payment_terms: supplier.payment_terms || catalog.payment_terms, delivery: supplier.delivery || catalog.delivery }, {
       onKP: async (name, content) => {
         await db.kp.put(name, lead.id, content)
         stored = true
       }
     })
     if (!filename || !stored) {
-      return res.status(502).json({ error: 'Не удалось сформировать КП. Проверьте ключ Gemini и повторите попытку.' })
+      return res.status(500).json({ error: 'Не удалось сохранить КП. Проверьте данные поставщика и повторите попытку.' })
     }
-    const updated = await db.leads.update(lead.id, { pdf_file: filename })
+    const updated = await db.leads.update(lead.id, { pdf_file: filename, matched_skus, matched_brands: proposalLead.matched_brands })
     if (!updated) return res.status(404).json({ error: 'Лид не найден' })
     res.json(updated)
   } catch (error) {
@@ -132,11 +144,13 @@ app.delete('/api/leads/:id', async (req, res) => {
 
 app.post('/api/leads/rescore', async (req, res) => {
   const leads = await db.leads.list()
+  const supplier = (await db.settings.get('supplier_config')) || {}
+  const catalog = getSupplierCatalog(supplier)
   let dist: any = { A: 0, B: 0, C: 0 }
   for (const l of leads) {
-    const r = rescoreLead(l)
+    const r = rescoreLead(l, null, catalog)
     dist[r.lead_tier] = (dist[r.lead_tier] || 0) + 1
-    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier })
+    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, matched_brands: r.matched_brands, matched_skus: r.matched_skus })
   }
   console.log(`♻️ Пересчитано ${leads.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
   res.json({ rescored: leads.length, distribution: dist })
@@ -228,17 +242,45 @@ app.get('/api/analytics', async (req, res) => {
 
 // ---------- settings ----------
 app.get('/api/supplier-config', async (req, res) => {
-  const cfg = await db.settings.get('supplier_config')
-  res.json(cfg?.name ? cfg : { name: 'УралАвтоОпт', contact: 'Петров И.С.' })
+  const profile = (await db.settings.get('supplier_config')) || {}
+  const catalog = getSupplierCatalog(profile)
+  res.json({
+    ...profile,
+    name: profile.name || catalog.supplier_name || 'УралАвтоОпт',
+    contact: profile.contact || '',
+    payment_terms: profile.payment_terms || catalog.payment_terms || '',
+    delivery: profile.delivery || catalog.delivery || '',
+    catalogItems: catalog.items,
+  })
 })
 
 app.put('/api/supplier-config', async (req, res) => {
   const name = String(req.body?.name || '').trim()
-  const contact = String(req.body?.contact || '').trim()
-  if (!name) return res.status(400).json({ error: 'Название поставщика обязательно' })
-  const cfg = { name, contact }
-  await db.settings.set('supplier_config', cfg)
-  res.json(cfg)
+  if (!name) return res.status(400).json({ error: 'Название компании обязательно' })
+  const fields = ['contact', 'email', 'phone', 'website', 'inn', 'address', 'payment_terms', 'delivery', 'warranty', 'offer_validity', 'offer_text']
+  const profile: any = { name }
+  for (const field of fields) profile[field] = String(req.body?.[field] || '').trim().slice(0, 2000)
+  const rawItems = req.body?.catalogItems
+  const items = rawItems === undefined ? getSupplierCatalog((await db.settings.get('supplier_config')) || {}).items : rawItems
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'Предложение должно быть списком товаров' })
+  if (items.length > 1000) return res.status(400).json({ error: 'Максимум 1000 товарных позиций' })
+  const catalogItems: any[] = []
+  for (const [index, item] of items.entries()) {
+    const brand = String(item?.brand || '').trim().slice(0, 100)
+    const productName = String(item?.name || '').trim().slice(0, 200)
+    const price = Number(item?.price)
+    const stock = Number(item?.stock || 0)
+    if (!brand || !productName || !Number.isFinite(price) || price < 0 || !Number.isFinite(stock) || stock < 0) {
+      return res.status(400).json({ error: `Проверьте товарную позицию ${index + 1}: нужны бренд, название и корректная цена/остаток` })
+    }
+    catalogItems.push({
+      brand, name: productName, sku: String(item?.sku || '').trim().slice(0, 100),
+      car: String(item?.car || '').trim().slice(0, 200), price, stock
+    })
+  }
+  profile.catalogItems = catalogItems
+  await db.settings.set('supplier_config', profile)
+  res.json(profile)
 })
 
 app.get('/api/scoring-config', async (req, res) => {
@@ -390,9 +432,11 @@ async function launchPipelineJob(params: {
     }, 60_000)
 
     try {
+      const supplier = (await db.settings.get('supplier_config')) || {}
+      const supplierCatalog = getSupplierCatalog(supplier)
       const newLeads = await runPipeline(city, industry, safeLimit, '', (stage, processed, total) => {
         void updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
-      }, options)
+      }, { ...options, supplierCatalog })
 
       if (newLeads.length === 0) {
         await updateJob(jobId, {
