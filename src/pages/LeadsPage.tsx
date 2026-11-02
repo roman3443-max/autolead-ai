@@ -88,6 +88,9 @@ function LprAvatar({ name }: { name: string }) {
 }
 
 export default function LeadsPage(p: Props) {
+  const [industryFilter, setIndustryFilter] = useState('all')
+  const activityOptions = [...new Set(p.leads.map(lead => lead.industry?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru'))
+  const visibleLeads = industryFilter === 'all' ? p.filteredLeads : p.filteredLeads.filter(lead => lead.industry === industryFilter)
   const fileInput = useRef<HTMLInputElement>(null)
   const [importRows, setImportRows] = useState<any[]>([])
   const [importSource, setImportSource] = useState('')
@@ -155,12 +158,16 @@ export default function LeadsPage(p: Props) {
             />
           </div>
           <div className="flex items-center gap-3 flex-wrap">
+            <select value={industryFilter} onChange={e => setIndustryFilter(e.target.value)} className="input !w-auto !py-2 text-[13px]">
+              <option value="all">Все виды деятельности</option>
+              {activityOptions.map(activity => <option key={activity} value={activity}>{activity}</option>)}
+            </select>
             <select value={p.statusFilter} onChange={e => p.setStatusFilter(e.target.value)} className="input !w-auto !py-2 text-[13px]">
               <option value="all">Все статусы</option>
               {Object.entries(STATUS_META).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
             </select>
             <div className="text-[13px] text-slate-500 ml-auto">
-              Найдено: <span className="text-slate-200 font-semibold tabular-nums">{p.filteredLeads.length}</span> из {p.leads.length}
+              Найдено: <span className="text-slate-200 font-semibold tabular-nums">{visibleLeads.length}</span> из {p.leads.length}
             </div>
             <button onClick={() => fileInput.current?.click()} disabled={importBusy} className="btn-ghost !py-2 text-[13px]">
               <Upload size={14} /> Импорт CSV
@@ -194,7 +201,7 @@ export default function LeadsPage(p: Props) {
               </div>
             ))}
           </div>
-        ) : p.filteredLeads.length === 0 ? (
+        ) : visibleLeads.length === 0 ? (
           <div className="py-16 text-center">
             <Inbox size={36} className="mx-auto text-slate-600 mb-3" />
             <div className="text-slate-400 font-semibold">Лиды не найдены</div>
@@ -214,7 +221,7 @@ export default function LeadsPage(p: Props) {
                 </tr>
               </thead>
               <tbody>
-                {p.filteredLeads.map(lead => {
+                {visibleLeads.map(lead => {
                   const sm = STATUS_META[lead.status] || STATUS_META.new
                   const tm = TIER_META[lead.lead_tier] || TIER_META.C
                   return (
@@ -236,6 +243,7 @@ export default function LeadsPage(p: Props) {
                         </div>
                       </td>
                       <td className="td">
+                        {lead.phone && <div className="text-[11px] text-slate-400 mb-2">Тел. {lead.phone}</div>}
                         {lead.lpr.map((person, idx) => (
                           <div key={idx} className="flex items-start gap-2.5 mb-2 last:mb-0">
                             <LprAvatar name={person.name} />
