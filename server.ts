@@ -181,8 +181,18 @@ app.put('/api/leads/:id', async (req, res) => {
     }
   }
   delete body.id
-  const updated = await db.leads.update(req.params.id, body)
+  let updated = await db.leads.update(req.params.id, body)
   if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+  const scoringFieldsChanged = ['lpr', 'lpr_emails', 'brands', 'business_size', 'wholesale'].some(field => body[field] !== undefined)
+  if (scoringFieldsChanged) {
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const scoring = (await db.settings.get('scoring_config')) || {}
+    const scored = rescoreLead(updated, scoring, getSupplierCatalog(supplier))
+    updated = await db.leads.update(req.params.id, {
+      lead_score: scored.lead_score, lead_tier: scored.lead_tier,
+      matched_brands: scored.matched_brands, matched_skus: scored.matched_skus
+    })
+  }
   res.json(updated)
 })
 
