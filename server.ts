@@ -254,7 +254,14 @@ app.post('/api/leads/:id/generate-kp', async (req, res) => {
     if (!filename || !stored) {
       return res.status(500).json({ error: 'Не удалось сохранить КП. Проверьте данные поставщика и повторите попытку.' })
     }
-    const updated = await db.leads.update(lead.id, { pdf_file: filename, matched_skus, matched_brands: proposalLead.matched_brands })
+    const status = ['new', 'in_progress'].includes(lead.status) ? 'proposal_ready' : lead.status
+    const status_history = status !== lead.status
+      ? [...(Array.isArray(lead.status_history) ? lead.status_history : []), { status, date: new Date().toLocaleString('ru-RU') }]
+      : lead.status_history
+    const updated = await db.leads.update(lead.id, {
+      pdf_file: filename, matched_skus, matched_brands: proposalLead.matched_brands,
+      status, status_history
+    })
     if (!updated) return res.status(404).json({ error: 'Лид не найден' })
     res.json(updated)
   } catch (error) {
@@ -306,7 +313,7 @@ app.get('/api/leads/export', async (req, res) => {
     return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const statusText: Record<string, string> = {
-    new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
+    new: 'Новый', in_progress: 'В работе', proposal_ready: 'КП подготовлено', contacted: 'КП отправлено',
     not_target: 'Не целевой', blacklisted: 'Чёрный список', converted: 'Клиент'
   }
   const header = ['Компания', 'Сайт', 'Город', 'Вид деятельности', 'Адрес', 'Телефон', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Источник ЛПР', 'Цитата ЛПР', 'Email компании', 'Источник email', 'Бренды', 'Размер', 'Опт', 'Источник задачи', 'Комментарии']
