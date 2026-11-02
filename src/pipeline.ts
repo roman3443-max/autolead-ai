@@ -177,16 +177,29 @@ interface LeadData {
 interface GeocodeCache { [key: string]: { lat: number; lng: number; source: 'nominatim' } }
 let geocodeCache: GeocodeCache = readJSONFile('geocache.json', {})
 let geocodeDirty = false
+let nominatimQueue: Promise<void> = Promise.resolve()
+let lastNominatimRequestAt = 0
+
+async function acquireNominatimSlot(): Promise<() => void> {
+  const previous = nominatimQueue
+  let release: () => void = () => {}
+  nominatimQueue = new Promise<void>(resolve => { release = resolve })
+  await previous
+  const wait = 1100 - (Date.now() - lastNominatimRequestAt)
+  if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
+  lastNominatimRequestAt = Date.now()
+  return release
+}
 
 async function nominatimGeocode(query: string): Promise<{ lat: number; lng: number } | null> {
+  const release = await acquireNominatimSlot()
+  const ctrl = new AbortController()
+  const timeout = setTimeout(() => ctrl.abort(), 12000)
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 12000)
     const res = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`,
       { headers: { 'User-Agent': 'autolead-ai/1.0 (lead generation tool)' }, signal: ctrl.signal }
     )
-    clearTimeout(t)
     if (!res.ok) return null
     const data: any = await res.json()
     if (Array.isArray(data) && data.length > 0) {
@@ -197,23 +210,27 @@ async function nominatimGeocode(query: string): Promise<{ lat: number; lng: numb
     return null
   } catch {
     return null
+  } finally {
+    clearTimeout(timeout)
+    release()
   }
 }
 
-async function getCoordinates(companyName: string, city: string, useGeocode = true): Promise<GeocodeCache[string] | undefined> {
-  const cacheKey = `${companyName}|${city}`
+export async function getCoordinates(companyName: string, city: string, useGeocode = true, address = ''): Promise<GeocodeCache[string] | undefined> {
+  const cacheKey = address ? `${companyName}|${city}|${address}` : `${companyName}|${city}`
   const cached = geocodeCache[cacheKey]
   // Старые значения кэша могли быть случайными точками; используем только помеченные результаты геокодера.
   if (cached?.source === 'nominatim') return cached
   if (!useGeocode) return undefined
 
-  const coordinates = await nominatimGeocode(`${companyName}, ${city}`)
-  if (!coordinates) return undefined
+  const query = [address, companyName, city].filter(Boolean).join(', ')
+  const result = await nominatimGeocode(query)
+  if (!result) return undefined
 
-  const result = { ...coordinates, source: 'nominatim' as const }
-  geocodeCache[cacheKey] = result
+  const coordinates = { ...result, source: 'nominatim' as const }
+  geocodeCache[cacheKey] = coordinates
   geocodeDirty = true
-  return result
+  return coordinates
 }
 
 function saveGeocodeCache() {
@@ -475,7 +492,8 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
 
       const brands = extractBrands(content, catalog.items.map(item => item.brand))
       const matched_brands = getMatchedBrands(brands, catalog)
-      const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true)
+      const address = extractAddress(content)
+      const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true, address)
       const lead_score = calculateLeadScore(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
@@ -491,7 +509,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         company_name: company.company_name,
         domain: company.domain,
         city,
-        address: extractAddress(content),
+        address,
         coordinates: geocoding ? { lat: geocoding.lat, lng: geocoding.lng } : undefined,
         coordinate_source: geocoding?.source,
         lpr,
