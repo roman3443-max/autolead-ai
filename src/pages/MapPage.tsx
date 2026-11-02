@@ -221,6 +221,29 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
             <button onClick={() => { setCityFilter('all'); setIndustryFilter('all'); setStatusFilter('all') }} className="btn-ghost !py-2 text-[13px]">Сбросить</button>
           )}
         </div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
+          {missingLeadIds.length > 0 && (
+            <button onClick={() => void handleGeocodeClick()} disabled={geocodeBusy} className="btn-ghost !py-2 text-[13px]">
+              <LocateFixed size={14} /> {geocodeBusy ? 'Ищу координаты…' : 'Найти координаты без меток (' + missingLeadIds.length + ')'}
+            </button>
+          )}
+          <span className="text-xs text-slate-600">Нарисовать сектор:</span>
+          <button onClick={() => startDrawing('rectangle')} className="btn-ghost !py-2 text-[13px]"><Square size={14} /> Прямоугольник</button>
+          <button onClick={() => startDrawing('circle')} className="btn-ghost !py-2 text-[13px]"><CircleIcon size={14} /> Круг</button>
+          <button onClick={() => startDrawing('polygon')} className="btn-ghost !py-2 text-[13px]"><PenTool size={14} /> Ломаная область</button>
+          {drawMode === 'polygon' && (
+            <button onClick={finishPolygon} disabled={drawPoints.length < 3} className="btn-primary !py-2 text-[13px]">
+              <Check size={14} /> Замкнуть и продолжить
+            </button>
+          )}
+          {drawMode && <button onClick={cancelDrawing} className="btn-ghost !py-2 text-[13px]"><X size={14} /> Отмена</button>}
+        </div>
+        {drawMode && <p className="text-xs text-indigo-300">
+          {drawMode === 'rectangle' && 'Кликните две противоположные точки прямоугольника.'}
+          {drawMode === 'circle' && 'Кликните центр круга, затем точку на его границе.'}
+          {drawMode === 'polygon' && 'Отметьте вершины области кликами (' + drawPoints.length + '/3 минимум), затем нажмите «Замкнуть и продолжить».'}
+        </p>}
+        {geocodeError && <p className="text-xs text-rose-300">{geocodeError}</p>}
       </div>
       <div className="card overflow-hidden flex-1 relative">
         <MapContainer
