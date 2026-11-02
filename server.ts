@@ -87,10 +87,10 @@ app.put('/api/leads/:id', async (req, res) => {
 app.post('/api/leads/:id/generate-kp', async (req, res) => {
   const lead = await db.leads.get(req.params.id)
   if (!lead) return res.status(404).json({ error: 'Лид не найден' })
-  const supplierConfig = (await db.settings.get('supplier_config')) || {}
-  const supplierName = supplierConfig?.name || 'УралАвтоОпт'
   let stored = false
   try {
+    const supplierConfig = (await db.settings.get('supplier_config')) || {}
+    const supplierName = supplierConfig?.name || 'УралАвтоОпт'
     const filename = await generateKP(lead, supplierName, {
       onKP: async (name, content) => {
         await db.kp.put(name, lead.id, content)
