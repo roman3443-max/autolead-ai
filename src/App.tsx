@@ -35,6 +35,7 @@ export default function App() {
   const [analytics, setAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [isPipelineRunning, setIsPipelineRunning] = useState(false)
+  const [kpGeneratingId, setKpGeneratingId] = useState<string | null>(null)
   const [job, setJob] = useState<PipelineJob | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -183,6 +184,7 @@ export default function App() {
         if (data.status === 'done') {
           stopPolling(); setIsPipelineRunning(false)
           toast(data.message, 'success')
+          setActiveTab('table')
           loadData(); loadTasks()
         } else if (data.status === 'error') {
           stopPolling(); setIsPipelineRunning(false)
@@ -350,6 +352,21 @@ export default function App() {
     markLetterCopied(lead.id)
   }
 
+  const handleGenerateKP = async (lead: Lead) => {
+    setKpGeneratingId(lead.id)
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/${lead.id}/generate-kp`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось сформировать КП', 'error'); return }
+      setLeads(prev => prev.map(item => item.id === lead.id ? data : item))
+      setSelectedLead(prev => prev?.id === lead.id ? data : prev)
+      toast('КП сформировано. Его можно открыть из карточки лида.', 'success')
+    } catch {
+      toast('Ошибка соединения с сервером при формировании КП', 'error')
+    } finally {
+      setKpGeneratingId(null)
+    }
+  }
   const handleDownloadPDF = async (lead: Lead) => {
     if (!lead.pdf_file) { toast('КП ещё не сгенерировано', 'error'); return }
     try {
@@ -673,11 +690,11 @@ export default function App() {
                 <Send size={14} /> В почту
               </button>
               <button
-                onClick={() => handleDownloadPDF(selectedLead)}
-                disabled={!selectedLead.pdf_file}
+                onClick={() => selectedLead.pdf_file ? handleDownloadPDF(selectedLead) : handleGenerateKP(selectedLead)}
+                disabled={kpGeneratingId === selectedLead.id}
                 className="btn-ghost text-[13px]"
               >
-                <FileDown size={14} /> {selectedLead.pdf_file ? 'Открыть КП' : 'КП нет'}
+                <FileDown size={14} /> {kpGeneratingId === selectedLead.id ? 'Формирую КП…' : selectedLead.pdf_file ? 'Открыть КП' : 'Сформировать КП'}
               </button>
               <button onClick={() => handleDeleteLead(selectedLead)} className="btn-danger text-[13px] ml-auto">
                 <Trash2 size={14} /> Удалить
