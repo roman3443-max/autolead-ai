@@ -239,6 +239,9 @@ app.put('/api/leads/:id', async (req, res) => {
 app.post('/api/leads/:id/generate-kp', async (req, res) => {
   const lead = await db.leads.get(req.params.id)
   if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  if (['not_target', 'blacklisted'].includes(lead.status) && !lead.pdf_file) {
+    return res.status(409).json({ error: 'Сначала верните лид в рабочий статус, чтобы сформировать КП' })
+  }
   let stored = false
   try {
     const supplier = (await db.settings.get('supplier_config')) || {}
