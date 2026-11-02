@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   data JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS pipeline_locks (
+  lock_key TEXT PRIMARY KEY,
+  owner_job_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS managers (
   id TEXT PRIMARY KEY,
   data JSONB NOT NULL DEFAULT '{}'::jsonb
