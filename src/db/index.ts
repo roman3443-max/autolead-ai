@@ -342,7 +342,7 @@ export const db = {
     },
     async hasRunning(): Promise<boolean> {
       if (mode === 'json') return jsonStore.read('jobs_db.json', []).some((job: any) => job.status === 'running')
-      const rows = await exec!('SELECT COUNT(*)::int AS n FROM jobs WHERE status = \\'running\\'')
+      const rows = await exec!('SELECT COUNT(*)::int AS n FROM jobs WHERE status = \'running\'')
       return rows[0].n > 0
     },
     async getActive(): Promise<any | null> {
@@ -362,12 +362,12 @@ export const db = {
       }
       const expiresAt = new Date(Date.now() + PIPELINE_LOCK_TTL_MS)
       const rows = await exec!(
-        \`INSERT INTO pipeline_locks (lock_key, owner_job_id, expires_at)
+        `INSERT INTO pipeline_locks (lock_key, owner_job_id, expires_at)
          VALUES ('pipeline', $1, $2)
          ON CONFLICT (lock_key) DO UPDATE
            SET owner_job_id = EXCLUDED.owner_job_id, expires_at = EXCLUDED.expires_at
          WHERE pipeline_locks.expires_at < NOW()
-         RETURNING owner_job_id\`,
+         RETURNING owner_job_id`,
         [jobId, expiresAt]
       )
       return rows[0]?.owner_job_id === jobId
@@ -408,7 +408,7 @@ export const db = {
         return rows.length
       }
       rows = await exec!(
-        \`SELECT j.id, j.data
+        `SELECT j.id, j.data
          FROM jobs j
          WHERE j.status = 'running'
            AND ($1::text IS NULL OR j.id <> $1)
@@ -417,12 +417,12 @@ export const db = {
              WHERE l.lock_key = 'pipeline'
                AND l.owner_job_id = j.id
                AND l.expires_at > NOW()
-           )\`,
+           )`,
         [exceptJobId || null]
       )
       for (const row of rows) {
         const data = { ...row.data, status: 'error', error: 'Прервано остановкой или перезапуском сервера' }
-        await exec!('UPDATE jobs SET status = \\'error\\', data = $2 WHERE id = $1', [row.id, JSON.stringify(data)])
+        await exec!('UPDATE jobs SET status = \'error\', data = $2 WHERE id = $1', [row.id, JSON.stringify(data)])
         if (data.search_task_id) {
           await db.tasks.update(data.search_task_id, {
             status: 'error',
