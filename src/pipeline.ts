@@ -179,7 +179,7 @@ async function nominatimGeocode(query: string): Promise<{ lat: number; lng: numb
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 12000)
     const res = await fetch(
-      \`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=\${encodeURIComponent(query)}\`,
+      `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`,
       { headers: { 'User-Agent': 'autolead-ai/1.0 (lead generation tool)' }, signal: ctrl.signal }
     )
     clearTimeout(t)
@@ -197,13 +197,13 @@ async function nominatimGeocode(query: string): Promise<{ lat: number; lng: numb
 }
 
 async function getCoordinates(companyName: string, city: string, useGeocode = true): Promise<GeocodeCache[string] | undefined> {
-  const cacheKey = \`\${companyName}|\${city}\`
+  const cacheKey = `${companyName}|${city}`
   const cached = geocodeCache[cacheKey]
   // Старые значения кэша могли быть случайными точками; используем только помеченные результаты геокодера.
   if (cached?.source === 'nominatim') return cached
   if (!useGeocode) return undefined
 
-  const coordinates = await nominatimGeocode(\`\${companyName}, \${city}\`)
+  const coordinates = await nominatimGeocode(`${companyName}, ${city}`)
   if (!coordinates) return undefined
 
   const result = { ...coordinates, source: 'nominatim' as const }
