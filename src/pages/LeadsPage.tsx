@@ -136,21 +136,23 @@ export default function LeadsPage(p: Props) {
                             <div className="min-w-0">
                               <div className="text-[13px] text-slate-200 leading-tight">{person.name}</div>
                               <div className="text-[11px] text-slate-500">{person.position}</div>
-                              {lead.lpr_emails[idx] && (
-                                <div className="flex items-center gap-1 mt-0.5">
-                                  <span className="text-[12px] text-slate-400">{lead.lpr_emails[idx]}</span>
-                                  <button
-                                    onClick={() => navigator.clipboard.writeText(lead.lpr_emails[idx])}
-                                    className="text-slate-600 hover:text-white transition-colors"
-                                    title="Скопировать email"
-                                  >
-                                    <Copy size={11} />
-                                  </button>
-                                </div>
-                              )}
+                              {person.evidence && <div className="text-[11px] text-slate-500 mt-1 line-clamp-2">Источник: «{person.evidence}»</div>}
                             </div>
                           </div>
                         ))}
+                        {(lead.lpr_emails || []).length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-line/60">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-600 mb-1">
+                              {lead.email_source === 'website' ? 'Найдено на сайте · не привязано к ЛПР' : 'Email из старой записи · проверьте'}
+                            </div>
+                            {lead.lpr_emails.slice(0, 2).map((email, idx) => (
+                              <div key={idx} className="text-[11px] text-slate-400 truncate">{email}</div>
+                            ))}
+                          </div>
+                        )}
+                        {lead.lpr.length === 0 && (lead.lpr_emails || []).length === 0 && (
+                          <span className="text-[12px] text-slate-600">Контакты не найдены</span>
+                        )}
                       </td>
                       <td className="td">
                         <div className="flex flex-wrap gap-1 max-w-[180px]">
