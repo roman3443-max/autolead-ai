@@ -533,7 +533,7 @@ export default function App() {
     if (!res.ok) throw new Error(data.error || 'Не удалось найти координаты')
     await loadData()
     if (data.geocoded > 0) toast(`Координаты найдены для ${data.geocoded} лидов.${data.failed ? ` Не удалось определить для ${data.failed}; проверьте адреса.` : ''}`, data.failed ? 'info' : 'success')
-    else toast('Геокодер не нашёл точные точки для выбранных лидов. Добавьте точные адреса или координаты вручную при импорте.', 'info')
+    else toast('Геокодер не нашёл точные точки для выбранных лидов. Уточните город и адрес или загрузите координаты вручную.', 'info')
     return data
   }
 
