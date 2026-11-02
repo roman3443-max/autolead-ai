@@ -508,7 +508,14 @@ export default function App() {
       setSupplierDraft(data)
       try { localStorage.setItem('supplier_config', JSON.stringify(data)) } catch { /* ignore */ }
       setSupplierOpen(false)
-      toast('Карточка поставщика и предложение по брендам сохранены', 'success')
+      const scoreRes = await apiFetch(`${API_URL}/api/leads/rescore`, { method: 'POST' })
+      if (scoreRes.ok) {
+        const scoreData = await scoreRes.json().catch(() => ({}))
+        loadData()
+        toast(`Карточка сохранена. Пересчитан скоринг ${scoreData.rescored || 0} лидов по ассортименту поставщика.`, 'success')
+      } else {
+        toast('Карточка сохранена, но скоринг существующих лидов не обновлён.', 'error')
+      }
     } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
