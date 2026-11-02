@@ -146,9 +146,10 @@ app.post('/api/leads/rescore', async (req, res) => {
   const leads = await db.leads.list()
   const supplier = (await db.settings.get('supplier_config')) || {}
   const catalog = getSupplierCatalog(supplier)
+  const scoring = (await db.settings.get('scoring_config')) || {}
   let dist: any = { A: 0, B: 0, C: 0 }
   for (const l of leads) {
-    const r = rescoreLead(l, null, catalog)
+    const r = rescoreLead(l, scoring, catalog)
     dist[r.lead_tier] = (dist[r.lead_tier] || 0) + 1
     await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, matched_brands: r.matched_brands, matched_skus: r.matched_skus })
   }
@@ -434,9 +435,18 @@ async function launchPipelineJob(params: {
     try {
       const supplier = (await db.settings.get('supplier_config')) || {}
       const supplierCatalog = getSupplierCatalog(supplier)
+      const globalScoring = (await db.settings.get('scoring_config')) || {}
+      const taskScoring = options?.scoring || {}
+      const scoring = {
+        ...globalScoring,
+        ...taskScoring,
+        weights: { ...(globalScoring.weights || {}), ...(taskScoring.weights || {}) },
+        tiers: { ...(globalScoring.tiers || {}), ...(taskScoring.tiers || {}) },
+        businessSizeScores: { ...(globalScoring.businessSizeScores || {}), ...(taskScoring.businessSizeScores || {}) },
+      }
       const newLeads = await runPipeline(city, industry, safeLimit, '', (stage, processed, total) => {
         void updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
-      }, { ...options, supplierCatalog })
+      }, { ...options, scoring, supplierCatalog })
 
       if (newLeads.length === 0) {
         await updateJob(jobId, {
