@@ -537,6 +537,18 @@ export default function App() {
     return data
   }
 
+  const handleCreateSector = async (sector: any) => {
+    const res = await apiFetch(`${API_URL}/api/sectors`, {
+      method: 'POST',
+      body: JSON.stringify(sector)
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Не удалось сохранить сектор')
+    await loadData()
+    toast(`Сектор «${data.name}» сохранён.`, 'success')
+    return data
+  }
+
   const handleExportCSV = async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/leads/export`)
