@@ -120,7 +120,7 @@ function getMatchedBrands(brands: string[], catalog: SupplierCatalog): string[] 
   return [...new Set(brands.filter(brand => offered.has(normalizeBrand(brand))))]
 }
 
-function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems = 10): CatalogItem[] {
+export function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems = 10): CatalogItem[] {
   const matched = new Set(getMatchedBrands(brands, catalog).map(normalizeBrand))
   return (catalog.items || []).filter(item => matched.has(normalizeBrand(item.brand))).slice(0, maxItems)
 }
