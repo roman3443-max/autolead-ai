@@ -340,8 +340,10 @@ export default function App() {
   }
 
   const handleMailto = (lead: Lead) => {
+    const email = lead.email_source === 'website' ? lead.lpr_emails[0] : ''
+    if (!email) { toast('Email с сайта не найден. Проверьте контакт перед отправкой.', 'info'); return }
     const { subject, body } = buildLetter(lead)
-    window.location.href = `mailto:${lead.lpr_emails[0] || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
     markLetterCopied(lead.id)
   }
 
@@ -430,8 +432,8 @@ export default function App() {
   }
 
   const checklist = selectedLead ? [
-    { label: 'ЛПР найден', done: selectedLead.lpr.length > 0 && selectedLead.lpr[0].name !== 'Руководитель' },
-    { label: 'Email есть', done: (selectedLead.lpr_emails || []).length > 0 },
+    { label: 'ЛПР найден с цитатой источника', done: selectedLead.lpr.some(person => Boolean(person.evidence)) },
+    { label: 'Email найден на сайте', done: selectedLead.email_source === 'website' && (selectedLead.lpr_emails || []).length > 0 },
     { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
     { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
     { label: 'КП отправлено', done: ['contacted', 'in_progress', 'converted'].includes(selectedLead.status) },
@@ -557,32 +559,52 @@ export default function App() {
             </div>
 
             <div>
-              <div className="label">ЛПР</div>
+              <div className="label">ЛПР, найденные в тексте сайта</div>
               <div className="space-y-2">
+                {selectedLead.lpr.length === 0 && (
+                  <div className="card !bg-ink-800/60 p-3.5 text-[13px] text-slate-500">Имя и должность ЛПР с цитатой источника не найдены.</div>
+                )}
                 {selectedLead.lpr.map((person, i) => (
                   <div key={i} className="card !bg-ink-800/60 p-3.5">
                     <div className="font-semibold text-slate-100 text-sm">{person.name}</div>
                     <div className="text-[12px] text-slate-500 mb-2">{person.position}</div>
-                    {selectedLead.lpr_emails[i] && (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Mail size={12} className="text-slate-600" />
-                        <span className="text-[13px] text-slate-300">{selectedLead.lpr_emails[i]}</span>
-                        <button
-                          onClick={() => { navigator.clipboard.writeText(selectedLead.lpr_emails[i]); toast('Email скопирован', 'success') }}
-                          className="text-slate-600 hover:text-white transition-colors" title="Скопировать email"
-                        >
-                          <Copy size={12} />
-                        </button>
-                        <button
-                          onClick={() => handleMailto(selectedLead)}
-                          className="chip bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors ml-auto"
-                        >
-                          <Send size={11} /> В почту
-                        </button>
-                      </div>
+                    {person.evidence ? (
+                      <div className="text-[12px] text-slate-400 border-l border-indigo-500/40 pl-2">Источник: «{person.evidence}»</div>
+                    ) : (
+                      <div className="text-[11px] text-amber-300/80">Старая запись: источник имени не сохранён, проверьте вручную.</div>
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Email компании</div>
+              <div className="card !bg-ink-800/60 p-3.5">
+                {(selectedLead.lpr_emails || []).length === 0 ? (
+                  <div className="text-[13px] text-slate-500">Email на сайте не найден.</div>
+                ) : (
+                  <>
+                    <div className="text-[11px] text-slate-500 mb-2">
+                      {selectedLead.email_source === 'website'
+                        ? 'Найден в тексте сайта; принадлежность конкретному ЛПР и актуальность не проверены.'
+                        : 'Источник email в старой записи неизвестен; проверьте адрес перед использованием.'}
+                    </div>
+                    {selectedLead.lpr_emails.map((email, i) => (
+                      <div key={i} className="flex items-center gap-2 flex-wrap py-1">
+                        <Mail size={12} className="text-slate-600" />
+                        <span className="text-[13px] text-slate-300">{email}</span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(email); toast('Email скопирован', 'success') }}
+                          className="text-slate-600 hover:text-white transition-colors"
+                          title="Скопировать email"
+                        >
+                          <Copy size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             </div>
 
@@ -641,7 +663,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => handleMailto(selectedLead)}
-                disabled={!selectedLead.lpr_emails[0]}
+                disabled={!selectedLead.lpr_emails[0] || selectedLead.email_source !== 'website'}
                 className="btn-ghost text-[13px]"
                 title="Открыть в почтовом клиенте"
               >
