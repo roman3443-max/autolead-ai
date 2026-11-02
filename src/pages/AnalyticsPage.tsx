@@ -1,7 +1,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { Lead } from '../lib/types'
 import StatCard, { StatSkeleton } from '../components/StatCard'
-import { Users, Sparkles, Briefcase, Award } from 'lucide-react'
+import { Users, Sparkles, Briefcase, Award, FileDown, Send } from 'lucide-react'
 
 interface Props {
   analytics: any
@@ -36,11 +36,13 @@ export default function AnalyticsPage({ analytics, leads, loading }: Props) {
         <p className="text-sm text-slate-500 mt-1">Воронка, тиры и эффективность команды</p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-4">
         <StatCard label="Всего лидов" value={analytics.total} icon={<Users size={20} className="text-indigo-300" />} accent="bg-indigo-500/15" />
         <StatCard label="Новые" value={analytics.new} icon={<Sparkles size={20} className="text-sky-300" />} accent="bg-sky-500/15" delay={60} />
         <StatCard label="В работе" value={analytics.in_progress} icon={<Briefcase size={20} className="text-violet-300" />} accent="bg-violet-500/15" delay={120} />
-        <StatCard label="Клиенты" value={analytics.converted} icon={<Award size={20} className="text-emerald-300" />} accent="bg-emerald-500/15" delay={180} />
+        <StatCard label="КП подготовлено" value={analytics.proposal_ready} icon={<FileDown size={20} className="text-cyan-300" />} accent="bg-cyan-500/15" delay={180} />
+        <StatCard label="КП отправлено" value={analytics.contacted} icon={<Send size={20} className="text-sky-300" />} accent="bg-sky-500/15" delay={240} />
+        <StatCard label="Клиенты" value={analytics.converted} icon={<Award size={20} className="text-emerald-300" />} accent="bg-emerald-500/15" delay={300} />
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
@@ -50,13 +52,15 @@ export default function AnalyticsPage({ analytics, leads, loading }: Props) {
             <BarChart data={[
               { name: 'Новые', value: analytics.new },
               { name: 'В работе', value: analytics.in_progress },
+              { name: 'КП готово', value: analytics.proposal_ready },
+              { name: 'КП отправлено', value: analytics.contacted },
               { name: 'Клиенты', value: analytics.converted },
             ]}>
               <XAxis dataKey="name" stroke="#64748B" fontSize={12} tickLine={false} axisLine={false} />
               <YAxis stroke="#64748B" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
               <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'rgba(148,163,184,0.06)' }} />
               <Bar dataKey="value" radius={[8, 8, 0, 0]}>
-                {['#6366F1', '#8B5CF6', '#10B981'].map((c, i) => <Cell key={i} fill={c} />)}
+                {['#6366F1', '#8B5CF6', '#06B6D4', '#38BDF8', '#10B981'].map((c, i) => <Cell key={i} fill={c} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
