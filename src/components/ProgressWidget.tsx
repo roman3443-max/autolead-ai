@@ -11,7 +11,7 @@ export default function ProgressWidget({ job }: { job: PipelineJob | null }) {
   if (!job) return null
   const stageIndex = Math.max(0, STAGES.findIndex(stage => stage.id === job.stage))
   const pct = Math.min(100, (job.processed / Math.max(job.total, 1)) * 100)
-  const unit = job.stage === 'search' ? 'компаний' : 'сайтов'
+  const unit = job.stage === 'search' ? 'компаний' : job.stage === 'enrich' ? 'сайтов' : 'лидов'
 
   return (
     <div className="fixed bottom-5 left-5 z-[1500] w-[min(92vw,360px)] card p-4 border-indigo-500/30 animate-slide-in-left">
