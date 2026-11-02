@@ -12,7 +12,8 @@ interface Props {
 
 export default function MapPage({ leads, sectors, managers }: Props) {
   const mapRef = useRef<L.Map | null>(null)
-  const withCoords = leads.filter(l => l.coordinates)
+  const withCoords = leads.filter(l => l.coordinates && l.coordinate_source === 'nominatim')
+  const withoutGeocoding = leads.length - withCoords.length
 
   useEffect(() => {
     const t = setTimeout(() => { mapRef.current?.invalidateSize() }, 150)
@@ -27,7 +28,7 @@ export default function MapPage({ leads, sectors, managers }: Props) {
             <MapIcon size={18} className="text-indigo-400" /> Карта лидов и секторов
           </h1>
           <p className="text-[13px] text-slate-500 mt-0.5">
-            {sectors.length} секторов · {withCoords.length} лидов с координатами
+            {sectors.length} секторов · {withCoords.length} лидов с координатами из Nominatim · {withoutGeocoding} без подтверждённого геокодирования
           </p>
         </div>
       </div>
