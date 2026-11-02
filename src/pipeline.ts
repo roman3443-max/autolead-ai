@@ -148,18 +148,156 @@ function isExcludedDomain(hostname: string): boolean {
   return EXCLUDED_DOMAINS.some(d => host === d || host.endsWith('.' + d) || host.includes(d))
 }
 
-// --- Извлечение ЛПР только при наличии фрагмента в исходном тексте ---
-// Предположительные email-паттерны не создаются; адреса берутся только из текста сайта.
+// Email-паттерны не генерируем: сохраняем только адреса, найденные в источнике.
+
+interface LeadData {
+  company_name: string
+  domain: string
+  city: string
+  address?: string
+  coordinates?: { lat: number; lng: number }
+  coordinate_source?: 'nominatim'
+  lpr: { name: string; position: string; evidence?: string }[]
+  lpr_emails: string[]
+  email_source?: 'website' | 'none'
+  brands: string[]
+  lead_score: number
+  lead_tier: 'A' | 'B' | 'C'
+  business_size?: 'small' | 'medium' | 'large' | 'unknown'
+  wholesale?: boolean
+  reason?: string
+  matched_skus?: CatalogItem[]
+}
+
+// --- Геокодинг (Nominatim) с кэшем ---
+interface GeocodeCache { [key: string]: { lat: number; lng: number; source: 'nominatim' } }
+let geocodeCache: GeocodeCache = readJSONFile('geocache.json', {})
+let geocodeDirty = false
+
+async function nominatimGeocode(query: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 12000)
+    const res = await fetch(
+      \`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=\${encodeURIComponent(query)}\`,
+      { headers: { 'User-Agent': 'autolead-ai/1.0 (lead generation tool)' }, signal: ctrl.signal }
+    )
+    clearTimeout(t)
+    if (!res.ok) return null
+    const data: any = await res.json()
+    if (Array.isArray(data) && data.length > 0) {
+      const lat = Number(data[0].lat)
+      const lng = Number(data[0].lon)
+      if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function getCoordinates(companyName: string, city: string, useGeocode = true): Promise<GeocodeCache[string] | undefined> {
+  const cacheKey = \`\${companyName}|\${city}\`
+  const cached = geocodeCache[cacheKey]
+  // Старые значения кэша могли быть случайными точками; используем только помеченные результаты геокодера.
+  if (cached?.source === 'nominatim') return cached
+  if (!useGeocode) return undefined
+
+  const coordinates = await nominatimGeocode(\`\${companyName}, \${city}\`)
+  if (!coordinates) return undefined
+
+  const result = { ...coordinates, source: 'nominatim' as const }
+  geocodeCache[cacheKey] = result
+  geocodeDirty = true
+  return result
+}
+
+function saveGeocodeCache() {
+  if (!geocodeDirty) return
+  try {
+    fs.writeFileSync(path.join(rootDir, 'geocache.json'), JSON.stringify(geocodeCache, null, 2))
+    geocodeDirty = false
+  } catch (e) {
+    console.error('⚠️ Не удалось сохранить geocache.json:', e)
+  }
+}
+
+// --- AI: извлечение ЛПР, размера бизнеса, оптовых сигналов одним вызовом ---
+function normalizeEvidence(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+interface AiExtraction {
+  lpr: { name: string; position: string; evidence: string }[]
+  business_size: 'small' | 'medium' | 'large' | 'unknown'
+  wholesale: boolean
+  reason: string
+}
+
+async function extractWithGemini(companyName: string, domain: string, content: string): Promise<AiExtraction | null> {
+  if (!process.env.GEMINI_API_KEY) return null
+  const model = genAI.getGenerativeModel(
+    { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
+    { timeout: 60000 }
+  )
+  const prompt = 'Проанализируй текст сайта компании "' + companyName + '" (' + domain + ') и ответь СТРОГО в формате JSON:\n' +
+    '{\n  "lpr": [{"name": "Фамилия Имя", "position": "должность", "evidence": "точная цитата с сайта, содержащая имя"}],\n' +
+    '  "business_size": "small|medium|large|unknown",\n  "wholesale": true/false,\n' +
+    '  "reason": "одно предложение: почему этому лиду стоит продавать"\n}\n' +
+    'Правила:\n' +
+    '- lpr: до 2 людей, чьи имя и должность прямо подтверждаются текстом. Приведи точную цитату из текста без пересказа. Если цитаты нет — не включай человека.\n' +
+    '- business_size: large — сеть/филиалы/50+ сотрудников/крупный склад; medium — 10-50 сотрудников, несколько точек; small — один магазин/СТО; unknown — непонятно.\n' +
+    '- wholesale: true только при явных признаках опта в тексте (оптовые цены, "опт и розница", дистрибьютор, B2B).\n' +
+    'Текст сайта (первые 8000 символов):\n"""\n' + content.slice(0, 8000) + '\n"""'
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await model.generateContent(prompt)
+      const text = result.response.text().trim()
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) throw new Error('AI вернул не JSON')
+      const parsed = JSON.parse(jsonMatch[0])
+      const source = normalizeEvidence(content)
+      const lpr = Array.isArray(parsed.lpr) ? parsed.lpr.slice(0, 2).map((item: any) => ({
+        name: String(item.name || '').trim(),
+        position: String(item.position || 'Контактное лицо').trim(),
+        evidence: String(item.evidence || '').trim()
+      })).filter((item: any) => {
+        const quote = normalizeEvidence(item.evidence)
+        const name = normalizeEvidence(item.name)
+        return Boolean(name && quote && quote.includes(name) && source.includes(quote))
+      }) : []
+      return {
+        lpr,
+        business_size: ['small', 'medium', 'large'].includes(parsed.business_size) ? parsed.business_size : 'unknown',
+        wholesale: Boolean(parsed.wholesale),
+        reason: String(parsed.reason || '').slice(0, 300)
+      }
+    } catch (err: any) {
+      const msg = String(err?.message || err)
+      const isRetryable = msg.includes('503') || msg.includes('429') || msg.includes('aborted')
+      if (!isRetryable || attempt === 3) {
+        console.log('  ⚠️ AI-извлечение не удалось (' + msg.slice(0, 80) + ')')
+        return null
+      }
+      console.log('  ⏳ AI занят, повтор ' + (attempt + 1) + '/3...')
+      await new Promise(r => setTimeout(r, 8000))
+    }
+  }
+  return null
+}
+
+// --- Регэксп-извлечение ЛПР только при наличии имени и должности в тексте ---
 function extractLPRRegex(content: string): { name: string; position: string; evidence: string }[] {
   const found: { name: string; position: string; evidence: string }[] = []
   const patterns = [
     {
-      regex: /((?:генеральный\\s+)?директор|руководитель|менеджер\\s+по\\s+закупкам)\\s*[:—-]\\s*([А-ЯЁ][а-яё-]+(?:\\s+[А-ЯЁ][а-яё-]+){1,2})/giu,
+      regex: /((?:генеральный\s+)?директор|руководитель|менеджер\s+по\s+закупкам)\s*[:—-]\s*([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2})/giu,
       position: (match: RegExpMatchArray) => match[1],
       name: (match: RegExpMatchArray) => match[2]
     },
     {
-      regex: /([А-ЯЁ][а-яё-]+(?:\\s+[А-ЯЁ][а-яё-]+){1,2})\\s*[,—-]\\s*((?:генеральный\\s+)?директор|руководитель|менеджер\\s+по\\s+закупкам)/giu,
+      regex: /([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2})\s*[,—-]\s*((?:генеральный\s+)?директор|руководитель|менеджер\s+по\s+закупкам)/giu,
       position: (match: RegExpMatchArray) => match[2],
       name: (match: RegExpMatchArray) => match[1]
     }
@@ -323,7 +461,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const wholesale = ai ? ai.wholesale : hasWholesaleSignals(content)
       const reason = ai?.reason || ''
 
-      // Храним только email, найденные в тексте сайта; они не привязываются к конкретному ЛПР.
+      // Email: только адреса из текста сайта; принадлежность ЛПР не предполагается.
       const siteEmails = extractEmails(content)
       const lpr_emails = siteEmails
       const email_source = siteEmails.length > 0 ? 'website' : 'none'
@@ -360,7 +498,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         matched_skus
       })
 
-      console.log(`  ✅ ${company.domain}: подтверждённых ЛПР=${lpr.length}, email с сайта=${lpr_emails.length}, координаты=${geocoding ? 'Nominatim' : 'нет'}, Размер=${businessSize}, Опт=${wholesale}, Скор=${lead_score} (${lead_tier})`)
+      console.log(`  ✅ ${company.domain}: ЛПР с цитатой=${lpr.length}, email с сайта=${lpr_emails.length}, геокодирование=${geocoding ? 'Nominatim' : 'нет'}, Размер=${businessSize}, Опт=${wholesale}, Скор=${lead_score} (${lead_tier})`)
     } catch (error) {
       console.error(`  ❌ Ошибка при парсинге ${company.domain}:`, error)
     }
