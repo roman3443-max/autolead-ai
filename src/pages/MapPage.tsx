@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polygon, useMap } from 'react-leaflet'
 import { Map as MapIcon } from 'lucide-react'
 import L from 'leaflet'
-import { Lead } from '../lib/types'
+import { Lead, STATUS_META } from '../lib/types'
 
 interface Props {
   leads: Lead[]
@@ -28,8 +28,20 @@ function FitToLeads({ leads }: { leads: Lead[] }) {
 
 export default function MapPage({ leads, sectors, managers }: Props) {
   const mapRef = useRef<L.Map | null>(null)
-  const withCoords = useMemo(() => leads.filter(l => l.coordinates && ['nominatim', 'import'].includes(l.coordinate_source || '')), [leads])
-  const withoutGeocoding = leads.length - withCoords.length
+  const [cityFilter, setCityFilter] = useState('all')
+  const [industryFilter, setIndustryFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const cities = useMemo(() => [...new Set(leads.map(lead => lead.city?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
+  const industries = useMemo(() => [...new Set(leads.map(lead => lead.industry?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
+  const filteredLeads = useMemo(() => leads.filter(lead =>
+    (cityFilter === 'all' || lead.city === cityFilter) &&
+    (industryFilter === 'all' || lead.industry === industryFilter) &&
+    (statusFilter === 'all' || lead.status === statusFilter)
+  ), [leads, cityFilter, industryFilter, statusFilter])
+  const withCoords = useMemo(() => filteredLeads.filter(lead =>
+    lead.coordinates && ['nominatim', 'import'].includes(lead.coordinate_source || '')
+  ), [filteredLeads])
+  const withoutGeocoding = filteredLeads.length - withCoords.length
 
   useEffect(() => {
     const t = setTimeout(() => { mapRef.current?.invalidateSize() }, 150)
@@ -38,14 +50,31 @@ export default function MapPage({ leads, sectors, managers }: Props) {
 
   return (
     <div className="space-y-4 h-[calc(100vh-140px)] md:h-[calc(100vh-90px)] flex flex-col">
-      <div className="card px-5 py-4 flex items-center justify-between shrink-0">
+      <div className="card px-5 py-4 space-y-3 shrink-0">
         <div>
           <h1 className="text-lg font-extrabold text-white tracking-tight flex items-center gap-2">
             <MapIcon size={18} className="text-indigo-400" /> Карта лидов и секторов
           </h1>
           <p className="text-[13px] text-slate-500 mt-0.5">
-            {sectors.length} секторов · {withCoords.length} лидов с координатами (геокодинг или импорт) · {withoutGeocoding} без координат
+            {sectors.length} секторов · {withCoords.length} из {filteredLeads.length} лидов с координатами · {withoutGeocoding} без координат
           </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <select aria-label="Фильтр города" value={cityFilter} onChange={e => setCityFilter(e.target.value)} className="input !w-auto !py-2 text-[13px]">
+            <option value="all">Все города</option>
+            {cities.map(city => <option key={city} value={city}>{city}</option>)}
+          </select>
+          <select aria-label="Фильтр вида деятельности" value={industryFilter} onChange={e => setIndustryFilter(e.target.value)} className="input !w-auto !py-2 text-[13px]">
+            <option value="all">Все виды деятельности</option>
+            {industries.map(industry => <option key={industry} value={industry}>{industry}</option>)}
+          </select>
+          <select aria-label="Фильтр статуса" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input !w-auto !py-2 text-[13px]">
+            <option value="all">Все статусы</option>
+            {Object.entries(STATUS_META).map(([status, meta]) => <option key={status} value={status}>{meta.label}</option>)}
+          </select>
+          {(cityFilter !== 'all' || industryFilter !== 'all' || statusFilter !== 'all') && (
+            <button onClick={() => { setCityFilter('all'); setIndustryFilter('all'); setStatusFilter('all') }} className="btn-ghost !py-2 text-[13px]">Сбросить</button>
+          )}
         </div>
       </div>
       <div className="card overflow-hidden flex-1 relative">
