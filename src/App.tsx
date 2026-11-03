@@ -549,6 +549,27 @@ export default function App() {
     return data
   }
 
+  const handleUpdateSector = async (sectorId: string, sector: any) => {
+    const res = await apiFetch(`${API_URL}/api/sectors/${sectorId}`, {
+      method: 'PUT',
+      body: JSON.stringify(sector)
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Не удалось обновить сектор')
+    await loadData()
+    toast(`Сектор «${data.name}» обновлён.`, 'success')
+    return data
+  }
+
+  const handleDeleteSector = async (sectorId: string) => {
+    const res = await apiFetch(`${API_URL}/api/sectors/${sectorId}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Не удалось удалить сектор')
+    await loadData()
+    toast(`Сектор удалён. Лидов отвязано: ${data.unassigned || 0}.`, 'success')
+    return data
+  }
+
   const handleExportCSV = async () => {
     try {
       const res = await apiFetch(`${API_URL}/api/leads/export`)
@@ -726,7 +747,7 @@ export default function App() {
             onStatusChange={handleStatusChange}
           />
         )}
-        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onCreateSector={handleCreateSector} />}
+        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onCreateSector={handleCreateSector} onUpdateSector={handleUpdateSector} onDeleteSector={handleDeleteSector} />}
         {activeTab === 'managers' && <ManagersPage managers={managers} analytics={analytics} />}
         {activeTab === 'analytics' && <AnalyticsPage analytics={analytics} leads={leads} loading={loading} />}
       </main>
