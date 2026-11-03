@@ -747,7 +747,7 @@ export default function App() {
             onStatusChange={handleStatusChange}
           />
         )}
-        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onCreateSector={handleCreateSector} onUpdateSector={handleUpdateSector} onDeleteSector={handleDeleteSector} />}
+        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onCreateSector={handleCreateSector} onUpdateSector={handleUpdateSector} onDeleteSector={handleDeleteSector} onOpenLead={handleOpenLead} />}
         {activeTab === 'managers' && <ManagersPage managers={managers} analytics={analytics} />}
         {activeTab === 'analytics' && <AnalyticsPage analytics={analytics} leads={leads} loading={loading} />}
       </main>
