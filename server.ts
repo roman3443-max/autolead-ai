@@ -507,7 +507,10 @@ app.put('/api/sectors/:id', async (req, res) => {
   const leads = await db.leads.list()
   let assigned = 0
   for (const lead of leads) {
-    if (!hasValidCoordinates(lead.coordinates)) continue
+    if (!hasValidCoordinates(lead.coordinates)) {
+      if (lead.sector_id === updated.id) await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      continue
+    }
     const isInside = pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), polygon.geometry.coordinates[0])
     if (isInside) {
       await db.leads.update(lead.id, { sector_id: updated.id, assigned_manager_id: updated.manager_id })
