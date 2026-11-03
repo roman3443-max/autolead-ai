@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Popup, Polygon, Polyline, useMap, useMapEvents } from 'react-leaflet'
-import { Map as MapIcon, LocateFixed, Square, Circle as CircleIcon, PenTool, X, Check } from 'lucide-react'
+import { Map as MapIcon, LocateFixed, Square, Circle as CircleIcon, PenTool, X, Check, Pencil, Trash2 } from 'lucide-react'
 import { CenterModal } from '../components/Drawer'
 import L from 'leaflet'
 import { Lead, STATUS_META } from '../lib/types'
@@ -11,6 +11,8 @@ interface Props {
   managers: any[]
   onGeocodeMissing: (leadIds: string[]) => Promise<any>
   onCreateSector: (sector: any) => Promise<any>
+  onUpdateSector: (sectorId: string, sector: any) => Promise<any>
+  onDeleteSector: (sectorId: string) => Promise<any>
 }
 
 type DrawMode = 'rectangle' | 'circle' | 'polygon'
@@ -88,7 +90,7 @@ function FitToLeads({ leads }: { leads: Lead[] }) {
   return null
 }
 
-export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onCreateSector }: Props) {
+export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onCreateSector, onUpdateSector, onDeleteSector }: Props) {
   const mapRef = useRef<L.Map | null>(null)
   const [cityFilter, setCityFilter] = useState('all')
   const [industryFilter, setIndustryFilter] = useState('all')
@@ -99,6 +101,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
   const [sectorDraft, setSectorDraft] = useState({ name: '', manager_id: '', color: '#6366F1' })
   const [sectorBusy, setSectorBusy] = useState(false)
   const [sectorError, setSectorError] = useState('')
+  const [sectorEditingId, setSectorEditingId] = useState<string | null>(null)
   const [geocodeBusy, setGeocodeBusy] = useState(false)
   const [geocodeError, setGeocodeError] = useState('')
   const cities = useMemo(() => [...new Set(leads.map(lead => lead.city?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru')), [leads])
@@ -116,6 +119,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
 
   const startDrawing = (mode: DrawMode) => {
     setPendingShape(null)
+    setSectorEditingId(null)
     setDrawPoints([])
     setDrawMode(mode)
     setSectorError('')
@@ -155,6 +159,30 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
 
   const cancelDrawing = () => { setDrawMode(null); setDrawPoints([]); setSectorError('') }
 
+  const handleEditSector = (sector: any) => {
+    const ring = sector.polygon?.geometry?.coordinates?.[0]
+    if (!Array.isArray(ring) || ring.length < 4) {
+      setSectorError('У сектора нет корректной области для редактирования')
+      return
+    }
+    setSectorEditingId(sector.id)
+    setPendingShape({
+      shapeType: sector.polygon?.properties?.shape_type || 'polygon',
+      ring: ring.map((point: any) => [Number(point[0]), Number(point[1])] as [number, number]),
+    })
+    setSectorDraft({ name: sector.name || '', manager_id: sector.manager_id || '', color: sector.color || '#6366F1' })
+    setSectorError('')
+  }
+
+  const handleDeleteSectorClick = async (sector: any) => {
+    if (!window.confirm(`Удалить сектор «${sector.name}»? Лиды останутся в базе, привязка к этому сектору будет снята.`)) return
+    try {
+      await onDeleteSector(sector.id)
+    } catch (error: any) {
+      setSectorError(error?.message || 'Не удалось удалить сектор')
+    }
+  }
+
   const handleGeocodeClick = async () => {
     setGeocodeBusy(true); setGeocodeError('')
     try {
@@ -171,7 +199,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
     }
     setSectorBusy(true); setSectorError('')
     try {
-      await onCreateSector({
+      const payload = {
         name: sectorDraft.name.trim(),
         manager_id: sectorDraft.manager_id || undefined,
         color: sectorDraft.color,
@@ -180,8 +208,11 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
           geometry: { type: 'Polygon', coordinates: [pendingShape.ring] },
           properties: { shape_type: pendingShape.shapeType },
         },
-      })
+      }
+      if (sectorEditingId) await onUpdateSector(sectorEditingId, payload)
+      else await onCreateSector(payload)
       setPendingShape(null)
+      setSectorEditingId(null)
       setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
     } catch (error: any) {
       setSectorError(error?.message || 'Не удалось сохранить сектор')
@@ -269,7 +300,11 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
             >
               <Popup>
                 <b>{sec.name}</b><br />
-                Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}
+                Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}<br />
+                <div className="flex gap-2 mt-2">
+                  <button type="button" onClick={() => handleEditSector(sec)} className="text-indigo-600 underline text-xs">Редактировать</button>
+                  <button type="button" onClick={() => void handleDeleteSectorClick(sec)} className="text-rose-600 underline text-xs">Удалить</button>
+                </div>
               </Popup>
             </Polygon>
           ))}
@@ -295,7 +330,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
           </div>
         )}
       </div>
-      <CenterModal open={Boolean(pendingShape)} onClose={() => { if (!sectorBusy) { setPendingShape(null); setSectorError('') } }} title="Новый сектор" width="max-w-lg">
+      <CenterModal open={Boolean(pendingShape)} onClose={() => { if (!sectorBusy) { setPendingShape(null); setSectorEditingId(null); setSectorError('') } }} title={sectorEditingId ? 'Редактирование сектора' : 'Новый сектор'} width="max-w-lg">
         {pendingShape && (
           <div className="space-y-4">
             <p className="text-sm text-slate-400">
@@ -321,8 +356,8 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
             </div>
             {sectorError && <div className="text-sm text-rose-300">{sectorError}</div>}
             <div className="flex justify-end gap-2">
-              <button onClick={() => { setPendingShape(null); setSectorError('') }} disabled={sectorBusy} className="btn-ghost">Отмена</button>
-              <button onClick={() => void handleSaveSector()} disabled={sectorBusy} className="btn-primary">{sectorBusy ? 'Сохраняю…' : 'Сохранить сектор'}</button>
+              <button onClick={() => { setPendingShape(null); setSectorEditingId(null); setSectorError('') }} disabled={sectorBusy} className="btn-ghost">Отмена</button>
+              <button onClick={() => void handleSaveSector()} disabled={sectorBusy} className="btn-primary">{sectorBusy ? 'Сохраняю…' : sectorEditingId ? 'Сохранить изменения' : 'Сохранить сектор'}</button>
             </div>
           </div>
         )}
