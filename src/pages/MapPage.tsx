@@ -13,6 +13,7 @@ interface Props {
   onCreateSector: (sector: any) => Promise<any>
   onUpdateSector: (sectorId: string, sector: any) => Promise<any>
   onDeleteSector: (sectorId: string) => Promise<any>
+  onOpenLead: (lead: Lead) => void
 }
 
 type DrawMode = 'rectangle' | 'circle' | 'polygon'
@@ -90,7 +91,7 @@ function FitToLeads({ leads }: { leads: Lead[] }) {
   return null
 }
 
-export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onCreateSector, onUpdateSector, onDeleteSector }: Props) {
+export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onCreateSector, onUpdateSector, onDeleteSector, onOpenLead }: Props) {
   const mapRef = useRef<L.Map | null>(null)
   const [cityFilter, setCityFilter] = useState('all')
   const [industryFilter, setIndustryFilter] = useState('all')
@@ -111,6 +112,13 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
     (industryFilter === 'all' || lead.industry?.trim() === industryFilter) &&
     (statusFilter === 'all' || lead.status === statusFilter)
   ), [leads, cityFilter, industryFilter, statusFilter])
+  const sectorLeadCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    leads.forEach(lead => {
+      if (lead.sector_id) counts[lead.sector_id] = (counts[lead.sector_id] || 0) + 1
+    })
+    return counts
+  }, [leads])
   const hasCoordinates = (lead: Lead) => Boolean(lead.coordinates && Number.isFinite(lead.coordinates.lat) && Number.isFinite(lead.coordinates.lng) && Math.abs(lead.coordinates.lat) <= 90 && Math.abs(lead.coordinates.lng) <= 180)
   const withCoords = useMemo(() => filteredLeads.filter(hasCoordinates), [filteredLeads])
   const withoutGeocoding = filteredLeads.length - withCoords.length
@@ -308,6 +316,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
               <Popup>
                 <b>{sec.name}</b><br />
                 Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}<br />
+                Лидов в секторе: {sectorLeadCounts[sec.id] || 0}<br />
                 <div className="flex gap-2 mt-2">
                   <button type="button" onClick={() => handleEditSector(sec)} className="text-indigo-600 underline text-xs inline-flex items-center gap-1"><Pencil size={12} /> Редактировать</button>
                   <button type="button" onClick={() => void handleDeleteSectorClick(sec)} className="text-rose-600 underline text-xs inline-flex items-center gap-1"><Trash2 size={12} /> Удалить</button>
@@ -325,7 +334,11 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
                 {lead.lpr?.[0]?.name && <>Контакт: {lead.lpr[0].name}{lead.lpr[0].position ? ` · ${lead.lpr[0].position}` : ''}<br /></>}
                 {lead.lpr_emails?.[0] && <>Email: {lead.lpr_emails[0]}<br /></>}
                 Статус: {STATUS_META[lead.status]?.label || lead.status}<br />
-                Скор: {lead.lead_score} · Tier {lead.lead_tier}
+                Скор: {lead.lead_score} · Tier {lead.lead_tier}<br />
+                {lead.sector_id && <>Сектор: {sectors.find((sector: any) => sector.id === lead.sector_id)?.name || 'Не назначен'}<br /></>}
+                <button type="button" onClick={() => onOpenLead(lead)} className="mt-2 text-indigo-600 underline text-xs inline-flex items-center gap-1">
+                  Открыть карточку лида
+                </button>
               </Popup>
             </Marker>
           ))}
