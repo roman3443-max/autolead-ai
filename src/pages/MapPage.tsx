@@ -10,6 +10,7 @@ interface Props {
   sectors: any[]
   managers: any[]
   onGeocodeMissing: (leadIds: string[]) => Promise<any>
+  onGeocodeCity: (city: string) => Promise<{ lat: number; lng: number }>
   onCreateSector: (sector: any) => Promise<any>
   onUpdateSector: (sectorId: string, sector: any) => Promise<any>
   onDeleteSector: (sectorId: string) => Promise<any>
@@ -91,8 +92,10 @@ function FitToLeads({ leads }: { leads: Lead[] }) {
   return null
 }
 
-export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onCreateSector, onUpdateSector, onDeleteSector, onOpenLead }: Props) {
+export default function MapPage({ leads, sectors, managers, onGeocodeMissing, onGeocodeCity, onCreateSector, onUpdateSector, onDeleteSector, onOpenLead }: Props) {
   const mapRef = useRef<L.Map | null>(null)
+  const cityLookupRef = useRef(0)
+  const [cityCenterError, setCityCenterError] = useState('')
   const [cityFilter, setCityFilter] = useState('all')
   const [industryFilter, setIndustryFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -238,6 +241,23 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
     return () => clearTimeout(t)
   }, [])
 
+  useEffect(() => {
+    const city = cityFilter === 'all' ? (cities.length === 1 ? cities[0] : '') : cityFilter
+    if (!city || withCoords.length > 0) return
+    const requestId = ++cityLookupRef.current
+    setCityCenterError('')
+    void onGeocodeCity(city)
+      .then(({ lat, lng }) => {
+        if (cityLookupRef.current === requestId) mapRef.current?.setView([lat, lng], 12)
+      })
+      .catch((error: any) => {
+        if (cityLookupRef.current === requestId) {
+          setCityCenterError(error?.message || `Не удалось определить центр города «${city}»`)
+        }
+      })
+    return () => { cityLookupRef.current++ }
+  }, [cityFilter, cities, withCoords.length, onGeocodeCity])
+
   return (
     <div className="space-y-4 h-[calc(100vh-140px)] md:h-[calc(100vh-90px)] flex flex-col">
       <div className="card px-5 py-4 space-y-3 shrink-0">
@@ -290,6 +310,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
         </p>}
         {sectorEditingId && !pendingShape && !drawMode && <p className="text-xs text-indigo-300">Вы меняете границу сохранённого сектора. Выберите инструмент выше и нарисуйте новую область.</p>}
         {geocodeError && <p className="text-xs text-rose-300">{geocodeError}</p>}
+        {cityCenterError && <p className="text-xs text-amber-300">{cityCenterError}</p>}
       </div>
       <div className="card overflow-hidden flex-1 relative">
         <MapContainer
