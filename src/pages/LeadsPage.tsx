@@ -91,6 +91,13 @@ export default function LeadsPage(p: Props) {
   const [industryFilter, setIndustryFilter] = useState('all')
   const activityOptions = [...new Set(p.leads.map(lead => lead.industry?.trim()).filter((value): value is string => Boolean(value)))].sort((a, b) => a.localeCompare(b, 'ru'))
   const visibleLeads = industryFilter === 'all' ? p.filteredLeads : p.filteredLeads.filter(lead => lead.industry === industryFilter)
+  const now = new Date()
+  const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+  const followUps = p.leads
+    .filter(lead => lead.next_contact_at && !['not_target', 'blacklisted', 'converted'].includes(lead.status))
+    .map(lead => ({ lead, date: new Date(lead.next_contact_at as string) }))
+    .filter(item => Number.isFinite(item.date.getTime()) && item.date <= weekAhead)
+    .sort((a, b) => a.date.getTime() - b.date.getTime())
   const fileInput = useRef<HTMLInputElement>(null)
   const [importRows, setImportRows] = useState<any[]>([])
   const [importSource, setImportSource] = useState('')
@@ -192,6 +199,42 @@ export default function LeadsPage(p: Props) {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="card p-4 md:p-5 space-y-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="text-sm font-bold text-slate-100">Контакты для внимания</h2>
+            <p className="text-xs text-slate-500 mt-1">Просроченные и запланированные на ближайшие 7 дней.</p>
+          </div>
+          <div className="flex gap-3 text-xs">
+            <span className="text-rose-300">Просрочено: {followUps.filter(item => item.date < now).length}</span>
+            <span className="text-indigo-300">Впереди: {followUps.filter(item => item.date >= now).length}</span>
+          </div>
+        </div>
+        {followUps.length === 0 ? (
+          <div className="text-sm text-slate-500">Нет контактов на ближайшие дни. Назначьте дату в карточке лида.</div>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-2">
+            {followUps.slice(0, 8).map(({ lead, date }) => {
+              const overdue = date < now
+              const latestNote = lead.activities?.[0]?.note
+              return (
+                <button key={lead.id} onClick={() => p.onOpenLead(lead)} className="card !bg-ink-800/50 p-3 text-left hover:border-indigo-500/40 transition-colors">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="font-semibold text-sm text-slate-100">{lead.company_name}</span>
+                    <span className={overdue ? 'text-[11px] text-rose-300 shrink-0' : 'text-[11px] text-indigo-300 shrink-0'}>
+                      {overdue ? 'Просрочено · ' : ''}{date.toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">{lead.city}{lead.industry ? ` · ${lead.industry}` : ''}</div>
+                  {latestNote && <div className="text-xs text-slate-400 mt-2 line-clamp-2">{latestNote}</div>}
+                </button>
+              )
+            })}
+          </div>
+        )}
+        {followUps.length > 8 && <div className="text-xs text-slate-500">Показаны ближайшие 8 из {followUps.length}. Отфильтруйте лиды по поиску или статусу для работы с остальными.</div>}
       </section>
 
       <div className="card overflow-hidden">
