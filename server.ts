@@ -475,18 +475,48 @@ app.put('/api/sectors/:id', async (req, res) => {
     return res.status(400).json({ error: 'Выбранный менеджер не найден' })
   }
   const color = /^#[0-9a-f]{6}$/i.test(String(req.body?.color || '')) ? String(req.body.color) : current.color || '#6366F1'
+  let polygon = current.polygon
+  if (req.body?.polygon !== undefined) {
+    const rawRing = req.body?.polygon?.geometry?.coordinates?.[0]
+    if (!Array.isArray(rawRing) || rawRing.length < 4 || rawRing.length > 500) {
+      return res.status(400).json({ error: 'Для сектора нужна замкнутая область минимум из 3 вершин' })
+    }
+    const ring: [number, number][] = rawRing.map((point: any) => [Number(point?.[0]), Number(point?.[1])])
+    if (ring.some(([lng, lat]) => !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90)) {
+      return res.status(400).json({ error: 'В секторе обнаружены некорректные координаты' })
+    }
+    if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) ring.push([...ring[0]])
+    const area = ring.slice(1).reduce((sum, point, index) => {
+      const previous = ring[index]
+      return sum + previous[0] * point[1] - point[0] * previous[1]
+    }, 0)
+    if (Math.abs(area) < 1e-10) return res.status(400).json({ error: 'Сектор не образует замкнутую область' })
+    polygon = {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [ring] },
+      properties: { shape_type: String(req.body?.polygon?.properties?.shape_type || 'polygon') },
+    }
+  }
   const updated = await db.sectors.update(req.params.id, {
     name,
     manager_id: managerId || undefined,
     color,
+    polygon,
   })
   if (!updated) return res.status(404).json({ error: 'Сектор не найден' })
   const leads = await db.leads.list()
   let assigned = 0
   for (const lead of leads) {
-    if (lead.sector_id === updated.id) {
-      await db.leads.update(lead.id, { assigned_manager_id: updated.manager_id })
+    if (!hasValidCoordinates(lead.coordinates)) continue
+    const isInside = pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), polygon.geometry.coordinates[0])
+    if (isInside) {
+      await db.leads.update(lead.id, { sector_id: updated.id, assigned_manager_id: updated.manager_id })
       assigned++
+    } else if (lead.sector_id === updated.id) {
+      await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      await assignLeadToKnownSector({ ...lead, sector_id: undefined, assigned_manager_id: undefined })
+    } else if (lead.sector_id === undefined || lead.sector_id === null) {
+      await assignLeadToKnownSector(lead)
     }
   }
   res.json({ ...updated, leadsCount: assigned })
