@@ -157,7 +157,13 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
     setSectorError('')
   }
 
-  const cancelDrawing = () => { setDrawMode(null); setDrawPoints([]); setSectorError('') }
+  const cancelDrawing = () => {
+    setDrawMode(null)
+    setDrawPoints([])
+    setPendingShape(null)
+    setSectorEditingId(null)
+    setSectorError('')
+  }
 
   const handleEditSector = (sector: any) => {
     const ring = sector.polygon?.geometry?.coordinates?.[0]
@@ -274,6 +280,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
           {drawMode === 'circle' && 'Кликните центр круга, затем точку на его границе.'}
           {drawMode === 'polygon' && 'Отметьте вершины области кликами (' + drawPoints.length + '/3 минимум), затем нажмите «Замкнуть и продолжить».'}
         </p>}
+        {sectorEditingId && !pendingShape && !drawMode && <p className="text-xs text-indigo-300">Вы меняете границу сохранённого сектора. Выберите инструмент выше и нарисуйте новую область.</p>}
         {geocodeError && <p className="text-xs text-rose-300">{geocodeError}</p>}
       </div>
       <div className="card overflow-hidden flex-1 relative">
