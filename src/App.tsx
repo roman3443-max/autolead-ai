@@ -572,6 +572,16 @@ export default function App() {
     return data
   }
 
+  const handleGeocodeCity = async (city: string) => {
+    const res = await apiFetch(`${API_URL}/api/map/city-center`, {
+      method: 'POST',
+      body: JSON.stringify({ city })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Не удалось определить центр города')
+    return data.coordinates as { lat: number; lng: number }
+  }
+
   const handleCreateSector = async (sector: any) => {
     const res = await apiFetch(`${API_URL}/api/sectors`, {
       method: 'POST',
@@ -782,7 +792,7 @@ export default function App() {
             onStatusChange={handleStatusChange}
           />
         )}
-        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onCreateSector={handleCreateSector} onUpdateSector={handleUpdateSector} onDeleteSector={handleDeleteSector} onOpenLead={handleOpenLead} />}
+        {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onGeocodeCity={handleGeocodeCity} onCreateSector={handleCreateSector} onUpdateSector={handleUpdateSector} onDeleteSector={handleDeleteSector} onOpenLead={handleOpenLead} />}
         {activeTab === 'managers' && <ManagersPage managers={managers} analytics={analytics} />}
         {activeTab === 'analytics' && <AnalyticsPage analytics={analytics} leads={leads} loading={loading} />}
       </main>
