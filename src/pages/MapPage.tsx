@@ -302,8 +302,8 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
                 <b>{sec.name}</b><br />
                 Менеджер: {managers.find((m: any) => m.id === sec.manager_id)?.name || 'Не назначен'}<br />
                 <div className="flex gap-2 mt-2">
-                  <button type="button" onClick={() => handleEditSector(sec)} className="text-indigo-600 underline text-xs">Редактировать</button>
-                  <button type="button" onClick={() => void handleDeleteSectorClick(sec)} className="text-rose-600 underline text-xs">Удалить</button>
+                  <button type="button" onClick={() => handleEditSector(sec)} className="text-indigo-600 underline text-xs inline-flex items-center gap-1"><Pencil size={12} /> Редактировать</button>
+                  <button type="button" onClick={() => void handleDeleteSectorClick(sec)} className="text-rose-600 underline text-xs inline-flex items-center gap-1"><Trash2 size={12} /> Удалить</button>
                 </div>
               </Popup>
             </Polygon>
