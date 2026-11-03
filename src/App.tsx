@@ -949,6 +949,58 @@ export default function App() {
               </div>
             </div>
 
+            <div className="card !bg-ink-800/50 p-4 space-y-3">
+              <div>
+                <div className="font-semibold text-sm text-slate-100">Следующий контакт</div>
+                {selectedLead.next_contact_at && (
+                  <div className={new Date(selectedLead.next_contact_at).getTime() < Date.now() ? 'text-xs text-rose-300 mt-1' : 'text-xs text-indigo-300 mt-1'}>
+                    {new Date(selectedLead.next_contact_at).getTime() < Date.now() ? 'Просрочен: ' : 'Запланирован: '}
+                    {new Date(selectedLead.next_contact_at).toLocaleString('ru-RU')}
+                  </div>
+                )}
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="label">Дата и время</label>
+                  <input
+                    type="datetime-local"
+                    value={followUpDraft.date}
+                    onChange={e => setFollowUpDraft({ ...followUpDraft, date: e.target.value })}
+                    className="input"
+                  />
+                </div>
+                <p className="text-xs text-slate-500">Оставьте дату пустой, чтобы снять напоминание.</p>
+              </div>
+              <div>
+                <label className="label">Заметка / следующий шаг</label>
+                <textarea
+                  value={followUpDraft.note}
+                  onChange={e => setFollowUpDraft({ ...followUpDraft, note: e.target.value })}
+                  className="input min-h-20 resize-y"
+                  maxLength={2000}
+                  placeholder="Например: отправить КП, позвонить по наличию брендов"
+                />
+              </div>
+              <div className="flex justify-end">
+                <button onClick={() => void handleSaveFollowUp()} disabled={followUpBusy} className="btn-primary">
+                  {followUpBusy ? 'Сохраняю…' : 'Сохранить контакт'}
+                </button>
+              </div>
+              <div>
+                <div className="label">История контактов</div>
+                <div className="space-y-2 max-h-44 overflow-y-auto">
+                  {(selectedLead.activities || []).length === 0 && <div className="text-slate-600 text-sm italic">Записей пока нет</div>}
+                  {(selectedLead.activities || []).map(activity => (
+                    <div key={activity.id} className="card !bg-ink-900/70 px-3.5 py-2.5">
+                      <div className="text-[11px] text-slate-500">{new Date(activity.created_at).toLocaleString('ru-RU')}</div>
+                      <div className="text-[13px] text-slate-300 mt-1 whitespace-pre-wrap">{activity.note}</div>
+                      {activity.next_contact_at && <div className="text-[11px] text-indigo-300 mt-1">Контакт: {new Date(activity.next_contact_at).toLocaleString('ru-RU')}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div>
               <div className="label">История статусов</div>
               <div className="card !bg-ink-800/60 divide-y divide-line max-h-44 overflow-y-auto">
