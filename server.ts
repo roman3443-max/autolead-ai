@@ -128,6 +128,20 @@ app.post('/api/auth/login', loginHandler)
 app.get('/api/auth/me', authMiddleware, (req: any, res) => res.json(req.user))
 app.use('/api', authMiddleware)
 
+app.post('/api/map/city-center', async (req, res) => {
+  const city = String(req.body?.city || '').trim()
+  if (city.length < 2 || city.length > 100) return res.status(400).json({ error: 'Укажите город' })
+  if ([...city].some(char => char.codePointAt(0) === 0xfffd)) return res.status(400).json({ error: 'Название города содержит ошибку кодировки' })
+  try {
+    const coordinates = await getCoordinates('', city, true)
+    if (!coordinates) return res.status(404).json({ error: `Не удалось найти город «${city}»` })
+    res.json({ city, coordinates: { lat: coordinates.lat, lng: coordinates.lng } })
+  } catch (error) {
+    console.error('❌ Ошибка поиска центра города:', error)
+    res.status(500).json({ error: 'Не удалось определить центр города' })
+  }
+})
+
 // ---------- leads ----------
 app.get('/api/leads', async (req, res) => {
   res.json(await db.leads.list())
