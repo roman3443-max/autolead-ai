@@ -572,7 +572,7 @@ export default function App() {
     return data
   }
 
-  const handleGeocodeCity = async (city: string) => {
+  const handleGeocodeCity = useCallback(async (city: string) => {
     const res = await apiFetch(`${API_URL}/api/map/city-center`, {
       method: 'POST',
       body: JSON.stringify({ city })
@@ -580,7 +580,7 @@ export default function App() {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(data.error || 'Не удалось определить центр города')
     return data.coordinates as { lat: number; lng: number }
-  }
+  }, [apiFetch])
 
   const handleCreateSector = async (sector: any) => {
     const res = await apiFetch(`${API_URL}/api/sectors`, {
