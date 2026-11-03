@@ -25,6 +25,8 @@ export interface Lead {
   status: string
   pdf_file?: string | null
   comments?: string[]
+  activities?: { id: string; created_at: string; note: string; next_contact_at?: string | null }[]
+  next_contact_at?: string | null
   status_history?: { status: string; date: string }[]
   sector_id?: string
   assigned_manager_id?: string
