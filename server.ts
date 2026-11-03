@@ -465,6 +465,48 @@ app.post('/api/sectors', async (req, res) => {
   res.json({ ...newSector, leadsCount: assigned })
 })
 
+app.put('/api/sectors/:id', async (req, res) => {
+  const current = await db.sectors.get(req.params.id)
+  if (!current) return res.status(404).json({ error: 'Сектор не найден' })
+  const name = String(req.body?.name ?? current.name).trim()
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Название сектора должно быть от 2 до 120 символов' })
+  const managerId = String(req.body?.manager_id ?? current.manager_id ?? '')
+  if (managerId && !(await db.managers.list()).some((manager: any) => manager.id === managerId)) {
+    return res.status(400).json({ error: 'Выбранный менеджер не найден' })
+  }
+  const color = /^#[0-9a-f]{6}$/i.test(String(req.body?.color || '')) ? String(req.body.color) : current.color || '#6366F1'
+  const updated = await db.sectors.update(req.params.id, {
+    name,
+    manager_id: managerId || undefined,
+    color,
+  })
+  if (!updated) return res.status(404).json({ error: 'Сектор не найден' })
+  const leads = await db.leads.list()
+  let assigned = 0
+  for (const lead of leads) {
+    if (lead.sector_id === updated.id) {
+      await db.leads.update(lead.id, { assigned_manager_id: updated.manager_id })
+      assigned++
+    }
+  }
+  res.json({ ...updated, leadsCount: assigned })
+})
+
+app.delete('/api/sectors/:id', async (req, res) => {
+  const sector = await db.sectors.get(req.params.id)
+  if (!sector) return res.status(404).json({ error: 'Сектор не найден' })
+  const leads = await db.leads.list()
+  let unassigned = 0
+  for (const lead of leads) {
+    if (lead.sector_id === sector.id) {
+      await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      unassigned++
+    }
+  }
+  await db.sectors.remove(req.params.id)
+  res.json({ success: true, unassigned })
+})
+
 app.get('/api/managers', async (req, res) => {
   res.json(await db.managers.list())
 })
