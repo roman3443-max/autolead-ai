@@ -91,6 +91,14 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 })
 
+function toLocalDateTimeInput(value?: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 16)
+}
+
 export default function App() {
   // ---------- данные ----------
   const [activeTab, setActiveTab] = useState<TabId>('table')
@@ -121,6 +129,8 @@ export default function App() {
   const [leadEditDraft, setLeadEditDraft] = useState<any>(null)
   const [leadSaveBusy, setLeadSaveBusy] = useState(false)
   const [newComment, setNewComment] = useState('')
+  const [followUpDraft, setFollowUpDraft] = useState({ date: '', note: '' })
+  const [followUpBusy, setFollowUpBusy] = useState(false)
 
   const [supplier, setSupplier] = useState<any>(() => {
     if (typeof window !== 'undefined') {
@@ -382,7 +392,32 @@ export default function App() {
   const handleOpenLead = (lead: Lead) => {
     setLeadEditMode(false)
     setLeadEditDraft(null)
+    setFollowUpDraft({ date: toLocalDateTimeInput(lead.next_contact_at), note: '' })
     setSelectedLead(lead)
+  }
+
+  const handleSaveFollowUp = async () => {
+    if (!selectedLead) return
+    let next_contact_at: string | null = null
+    if (followUpDraft.date) {
+      const parsed = new Date(followUpDraft.date)
+      if (!Number.isFinite(parsed.getTime())) { toast('Проверьте дату следующего контакта', 'error'); return }
+      next_contact_at = parsed.toISOString()
+    }
+    setFollowUpBusy(true)
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/${selectedLead.id}/follow-up`, {
+        method: 'POST',
+        body: JSON.stringify({ next_contact_at, note: followUpDraft.note })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось сохранить контакт', 'error'); return }
+      setSelectedLead(data)
+      setFollowUpDraft({ date: toLocalDateTimeInput(data.next_contact_at), note: '' })
+      loadData()
+      toast('Следующий контакт и заметка сохранены', 'success')
+    } catch { toast('Ошибка соединения с сервером', 'error') }
+    finally { setFollowUpBusy(false) }
   }
 
   const beginLeadEdit = (lead: Lead) => {
