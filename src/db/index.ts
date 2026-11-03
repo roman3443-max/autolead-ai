@@ -448,6 +448,11 @@ export const db = {
       const rows = await exec!('SELECT * FROM sectors')
       return rows.map(r => r.data)
     },
+    async get(id: string): Promise<any | null> {
+      if (mode === 'json') return jsonStore.read('sectors.json', []).find((sector: any) => sector.id === id) || null
+      const rows = await exec!('SELECT data FROM sectors WHERE id = $1', [id])
+      return rows[0]?.data ?? null
+    },
     async create(sector: any): Promise<void> {
       if (mode === 'json') {
         const all = jsonStore.read('sectors.json', [])
@@ -456,6 +461,32 @@ export const db = {
         return
       }
       await exec!('INSERT INTO sectors (id, data) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING', [sector.id, JSON.stringify(sector)])
+    },
+    async update(id: string, patch: any): Promise<any | null> {
+      const current = await db.sectors.get(id)
+      if (!current) return null
+      const updated = { ...current, ...patch, id }
+      if (mode === 'json') {
+        const all = jsonStore.read('sectors.json', [])
+        const index = all.findIndex((sector: any) => sector.id === id)
+        if (index < 0) return null
+        all[index] = updated
+        jsonStore.write('sectors.json', all)
+        return updated
+      }
+      await exec!('UPDATE sectors SET data = $2 WHERE id = $1', [id, JSON.stringify(updated)])
+      return updated
+    },
+    async remove(id: string): Promise<boolean> {
+      if (mode === 'json') {
+        const all = jsonStore.read('sectors.json', [])
+        const next = all.filter((sector: any) => sector.id !== id)
+        if (next.length === all.length) return false
+        jsonStore.write('sectors.json', next)
+        return true
+      }
+      const rows = await exec!('DELETE FROM sectors WHERE id = $1 RETURNING id', [id])
+      return rows.length > 0
     },
   },
 
