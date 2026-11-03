@@ -98,6 +98,9 @@ export default function LeadsPage(p: Props) {
     .map(lead => ({ lead, date: new Date(lead.next_contact_at as string) }))
     .filter(item => Number.isFinite(item.date.getTime()) && item.date <= weekAhead)
     .sort((a, b) => a.date.getTime() - b.date.getTime())
+  const overdueFollowUps = followUps.filter(item => item.date < now).slice(0, 4)
+  const upcomingFollowUps = followUps.filter(item => item.date >= now).slice(0, 4)
+  const displayedFollowUps = [...overdueFollowUps, ...upcomingFollowUps].sort((a, b) => a.date.getTime() - b.date.getTime())
   const fileInput = useRef<HTMLInputElement>(null)
   const [importRows, setImportRows] = useState<any[]>([])
   const [importSource, setImportSource] = useState('')
@@ -216,7 +219,7 @@ export default function LeadsPage(p: Props) {
           <div className="text-sm text-slate-500">Нет контактов на ближайшие дни. Назначьте дату в карточке лида.</div>
         ) : (
           <div className="grid md:grid-cols-2 gap-2">
-            {followUps.slice(0, 8).map(({ lead, date }) => {
+            {displayedFollowUps.map(({ lead, date }) => {
               const overdue = date < now
               const latestNote = lead.activities?.[0]?.note
               return (
@@ -234,7 +237,7 @@ export default function LeadsPage(p: Props) {
             })}
           </div>
         )}
-        {followUps.length > 8 && <div className="text-xs text-slate-500">Показаны ближайшие 8 из {followUps.length}. Отфильтруйте лиды по поиску или статусу для работы с остальными.</div>}
+        {followUps.length > displayedFollowUps.length && <div className="text-xs text-slate-500">Показаны до 4 просроченных и 4 ближайших контактов. Остальные: {followUps.length - displayedFollowUps.length}.</div>}
       </section>
 
       <div className="card overflow-hidden">
