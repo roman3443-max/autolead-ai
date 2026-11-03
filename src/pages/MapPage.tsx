@@ -119,7 +119,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
 
   const startDrawing = (mode: DrawMode) => {
     setPendingShape(null)
-    setSectorEditingId(null)
+    if (!sectorEditingId) setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
     setDrawPoints([])
     setDrawMode(mode)
     setSectorError('')
@@ -140,7 +140,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
       ? rectangleRing(next[0], next[1])
       : circleRing(next[0], next[1])
     setPendingShape({ shapeType: drawMode, ring })
-    setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
+    if (!sectorEditingId) setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
     setDrawMode(null)
     setDrawPoints([])
   }
@@ -151,7 +151,7 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
       return
     }
     setPendingShape({ shapeType: 'polygon', ring: closedRing(drawPoints) })
-    setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
+    if (!sectorEditingId) setSectorDraft({ name: '', manager_id: '', color: '#6366F1' })
     setDrawMode(null)
     setDrawPoints([])
     setSectorError('')
@@ -337,6 +337,15 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
               Форма: {pendingShape.shapeType === 'rectangle' ? 'прямоугольник' : pendingShape.shapeType === 'circle' ? 'круг' : 'замкнутая ломаная область'}.
               {pendingShape.shapeType === 'circle' && ' Круг сохраняется как приближённая граница области.'}
             </p>
+            {sectorEditingId && (
+              <button
+                type="button"
+                onClick={() => { setPendingShape(null); setDrawPoints([]); setDrawMode(null); setSectorError('') }}
+                className="btn-ghost !py-2 text-xs"
+              >
+                <Pencil size={13} /> Перерисовать границу на карте
+              </button>
+            )}
             <div>
               <label className="label">Название сектора</label>
               <input value={sectorDraft.name} onChange={e => setSectorDraft({ ...sectorDraft, name: e.target.value })} className="input" placeholder="Например, Север города" />
