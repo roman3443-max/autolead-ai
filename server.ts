@@ -244,6 +244,42 @@ app.post('/api/leads/import', async (req, res) => {
     res.status(500).json({ error: 'Не удалось обработать файл импорта' })
   }
 })
+app.post('/api/leads/:id/follow-up', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  const body = req.body || {}
+  let nextContactAt = lead.next_contact_at || null
+  let scheduleChanged = false
+  if (Object.prototype.hasOwnProperty.call(body, 'next_contact_at')) {
+    if (body.next_contact_at === null || body.next_contact_at === '') {
+      nextContactAt = null
+    } else {
+      const parsed = new Date(body.next_contact_at)
+      if (!Number.isFinite(parsed.getTime())) return res.status(400).json({ error: 'Укажите корректные дату и время следующего контакта' })
+      nextContactAt = parsed.toISOString()
+    }
+    scheduleChanged = nextContactAt !== (lead.next_contact_at || null)
+  }
+  const note = String(body.note || '').trim()
+  if (note.length > 2000) return res.status(400).json({ error: 'Заметка не должна превышать 2000 символов' })
+  if (body.next_contact_at === undefined && !note) return res.status(400).json({ error: 'Укажите дату контакта или добавьте заметку' })
+
+  const activities = Array.isArray(lead.activities) ? [...lead.activities] : []
+  if (note || scheduleChanged) {
+    activities.unshift({
+      id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      created_at: new Date().toISOString(),
+      note: note || (nextContactAt ? 'Назначен следующий контакт' : 'Дата следующего контакта снята'),
+      next_contact_at: nextContactAt,
+    })
+  }
+  const updated = await db.leads.update(lead.id, {
+    next_contact_at: nextContactAt,
+    activities: activities.slice(0, 100),
+  })
+  res.json(updated)
+})
+
 app.put('/api/leads/:id', async (req, res) => {
   const body: any = { ...req.body }
   if (body.company_name !== undefined) {
