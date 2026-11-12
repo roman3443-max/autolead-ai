@@ -18,6 +18,7 @@ import SearchPage from './pages/SearchPage'
 import MapPage from './pages/MapPage'
 import ManagersPage from './pages/ManagersPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import LandingPage from './pages/LandingPage'
 
 function parseOfferRows(raw: any): any[] {
   const rows = Array.isArray(raw) ? raw : raw?.items
@@ -143,6 +144,7 @@ export default function App() {
   const [supplierOpen, setSupplierOpen] = useState(false)
 
   const [authRequired, setAuthRequired] = useState(() => typeof window !== 'undefined' && !getToken())
+  const [landingVisible, setLandingVisible] = useState(() => typeof window !== 'undefined' && !getToken())
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
@@ -174,6 +176,7 @@ export default function App() {
       setUser(data.user)
       localStorage.setItem('auth_user', JSON.stringify(data.user))
       setAuthRequired(false)
+      setLandingVisible(false)
       setLoginPassword('')
       toast(`Добро пожаловать, ${data.user.name || data.user.email}`, 'success')
       loadData(); loadTasks(); loadSupplierConfig(); loadScoringConfig()
@@ -188,6 +191,12 @@ export default function App() {
     setToken('')
     setUser(null)
     localStorage.removeItem('auth_user')
+    setAuthRequired(true)
+    setLandingVisible(true)
+  }
+
+  const enterDemo = () => {
+    setLandingVisible(false)
     setAuthRequired(true)
   }
 
@@ -733,6 +742,8 @@ export default function App() {
 
   const sm = selectedLead ? (STATUS_META[selectedLead.status] || STATUS_META.new) : STATUS_META.new
   const tm = selectedLead ? (TIER_META[selectedLead.lead_tier] || TIER_META.C) : TIER_META.C
+
+  if (landingVisible) return <LandingPage onDemo={enterDemo} />
 
   return (
     <div className="min-h-screen md:flex">
