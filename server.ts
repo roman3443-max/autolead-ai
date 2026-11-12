@@ -216,6 +216,7 @@ app.post('/api/leads/import', async (req, res) => {
       const domain = normalizeLeadDomain(raw?.domain || raw?.website)
       const city = String(raw?.city || '').trim().slice(0, 100)
       const industry = String(raw?.industry || '').trim().slice(0, 120)
+      const phone = String(raw?.phone || '').trim().slice(0, 80)
       const rawEmails = Array.isArray(raw?.lpr_emails) ? raw.lpr_emails : String(raw?.email || '').split(/[;,|]/)
       const rawEmailValues = rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter(Boolean)
       const lpr_emails = [...new Set(rawEmailValues.filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
@@ -227,7 +228,7 @@ app.post('/api/leads/import', async (req, res) => {
       const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
       const lead: any = {
         company_name, domain, city, industry, address: String(raw?.address || '').trim().slice(0, 250),
-        phone: String(raw?.phone || '').trim().slice(0, 80),
+        phone,
         coordinates: hasCoordinates ? { lat, lng } : undefined,
         coordinate_source: hasCoordinates ? 'import' : undefined,
         lpr, lpr_emails, email_source: lpr_emails.length ? 'import' : 'none', brands,
