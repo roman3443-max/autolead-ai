@@ -14,7 +14,7 @@ export interface ProposalItem {
   car?: string
   price: number
   stock?: number
-  quantity: number
+  quantity?: number
 }
 
 export interface Lead {
@@ -112,5 +112,5 @@ export const SIZE_LABELS: Record<string, string> = {
 
 export const SCORING_FIELDS: [string, string][] = [
   ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Совпадение с ассортиментом'],
-  ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент сайта'],
+  ['businessSize', 'Размер бизнеса'], ['wholesale', 'Оптовый профиль'],
 ]
