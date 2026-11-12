@@ -27,6 +27,8 @@ let exec: Exec | null = null
 let pgPool: any = null
 let pgClient: any = null
 let pgmemDb: any = null
+let jsonPipelineLock: string | null = null
+const PIPELINE_LOCK_TTL_MS = 5 * 60 * 1000
 
 // ---------- JSON-fallback ----------
 const jsonStore = {
@@ -145,15 +147,23 @@ async function seedFromJsonIfEmpty() {
   }
 }
 
+function requireAdminBootstrapCredentials(): { email: string; password: string } {
+  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase() || ''
+  const password = process.env.ADMIN_PASSWORD || ''
+  if (!email || !password || password.length < 12) {
+    throw new Error('Для первого запуска задайте ADMIN_EMAIL и ADMIN_PASSWORD (не менее 12 символов).')
+  }
+  return { email, password }
+}
+
 async function seedAdminIfEmpty() {
   const rows = await exec!('SELECT COUNT(*)::int AS n FROM users')
   if (rows[0].n === 0) {
-    const email = process.env.ADMIN_EMAIL || 'admin@leadpipeline.local'
-    const password = process.env.ADMIN_PASSWORD || 'admin123'
+    const { email, password } = requireAdminBootstrapCredentials()
     const bcrypt = await import('bcryptjs')
     const hash = await bcrypt.hash(password, 10)
     await exec!('INSERT INTO users (email, name, password_hash, role) VALUES ($1, $2, $3, $4)', [email, 'Администратор', hash, 'admin'])
-    console.log(`👤 Создан аккаунт администратора: ${email} (пароль по умолчанию — смените через ADMIN_EMAIL/ADMIN_PASSWORD)`)
+    console.log(`👤 Создан аккаунт администратора: ${email}`)
   }
 }
 
@@ -164,13 +174,12 @@ async function seedUsersJsonIfEmpty() {
     try { users = JSON.parse(fs.readFileSync(p, 'utf-8')) } catch { users = [] }
   }
   if (users.length === 0) {
-    const email = process.env.ADMIN_EMAIL || 'admin@leadpipeline.local'
-    const password = process.env.ADMIN_PASSWORD || 'admin123'
+    const { email, password } = requireAdminBootstrapCredentials()
     const bcrypt = await import('bcryptjs')
     const password_hash = await bcrypt.hash(password, 10)
     users = [{ email, name: 'Администратор', password_hash, role: 'admin' }]
     jsonStore.write('users.json', users)
-    console.log(`👤 Создан аккаунт администратора: ${email} (пароль по умолчанию — задайте ADMIN_PASSWORD)`)
+    console.log(`👤 Создан аккаунт администратора: ${email}`)
   }
 }
 
@@ -301,33 +310,125 @@ export const db = {
 
   jobs: {
     async create(job: any): Promise<void> {
-      if (mode === 'json') return
+      if (mode === 'json') {
+        const all = jsonStore.read('jobs_db.json', [])
+        const index = all.findIndex((item: any) => item.id === job.id)
+        if (index >= 0) all[index] = job
+        else all.push(job)
+        jsonStore.write('jobs_db.json', all)
+        return
+      }
       await exec!('INSERT INTO jobs (id, status, data) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET status=$2, data=$3',
         [job.id, job.status || 'running', JSON.stringify(job)])
     },
     async update(id: string, patch: any): Promise<void> {
-      if (mode === 'json') return
+      if (mode === 'json') {
+        const all = jsonStore.read('jobs_db.json', [])
+        const index = all.findIndex((item: any) => item.id === id)
+        if (index < 0) return
+        all[index] = { ...all[index], ...patch, id }
+        jsonStore.write('jobs_db.json', all)
+        return
+      }
       const rows = await exec!('SELECT data FROM jobs WHERE id = $1', [id])
       if (!rows[0]) return
       const next = { ...rows[0].data, ...patch, id }
       await exec!('UPDATE jobs SET status = $2, data = $3 WHERE id = $1', [id, next.status || 'running', JSON.stringify(next)])
     },
     async get(id: string): Promise<any | null> {
-      if (mode === 'json') return null
+      if (mode === 'json') return jsonStore.read('jobs_db.json', []).find((job: any) => job.id === id) || null
       const rows = await exec!('SELECT * FROM jobs WHERE id = $1', [id])
       return rows[0] ? { ...rows[0].data, id: rows[0].id } : null
     },
     async hasRunning(): Promise<boolean> {
-      if (mode === 'json') return false
+      if (mode === 'json') return jsonStore.read('jobs_db.json', []).some((job: any) => job.status === 'running')
       const rows = await exec!('SELECT COUNT(*)::int AS n FROM jobs WHERE status = \'running\'')
       return rows[0].n > 0
     },
-    async markStaleRunningAsError(): Promise<number> {
-      if (mode === 'json') return 0
-      const rows = await exec!('SELECT id, data FROM jobs WHERE status = \'running\'')
-      for (const r of rows) {
-        const data = { ...r.data, status: 'error', error: 'Прервано перезапуском сервера' }
-        await exec!('UPDATE jobs SET status = \'error\', data = $2 WHERE id = $1', [r.id, JSON.stringify(data)])
+    async getActive(): Promise<any | null> {
+      if (mode === 'json') {
+        if (!jsonPipelineLock) return null
+        return await db.jobs.get(jsonPipelineLock) || { id: jsonPipelineLock, status: 'running' }
+      }
+      const rows = await exec!('SELECT owner_job_id FROM pipeline_locks WHERE lock_key = $1 AND expires_at > NOW()', ['pipeline'])
+      if (!rows[0]) return null
+      return await db.jobs.get(rows[0].owner_job_id) || { id: rows[0].owner_job_id, status: 'running' }
+    },
+    async acquirePipelineLock(jobId: string): Promise<boolean> {
+      if (mode === 'json') {
+        if (jsonPipelineLock && jsonPipelineLock !== jobId) return false
+        jsonPipelineLock = jobId
+        return true
+      }
+      const expiresAt = new Date(Date.now() + PIPELINE_LOCK_TTL_MS)
+      const rows = await exec!(
+        `INSERT INTO pipeline_locks (lock_key, owner_job_id, expires_at)
+         VALUES ('pipeline', $1, $2)
+         ON CONFLICT (lock_key) DO UPDATE
+           SET owner_job_id = EXCLUDED.owner_job_id, expires_at = EXCLUDED.expires_at
+         WHERE pipeline_locks.expires_at < NOW()
+         RETURNING owner_job_id`,
+        [jobId, expiresAt]
+      )
+      return rows[0]?.owner_job_id === jobId
+    },
+    async renewPipelineLock(jobId: string): Promise<boolean> {
+      if (mode === 'json') return jsonPipelineLock === jobId
+      const expiresAt = new Date(Date.now() + PIPELINE_LOCK_TTL_MS)
+      const rows = await exec!(
+        'UPDATE pipeline_locks SET expires_at = $2 WHERE lock_key = $1 AND owner_job_id = $3 RETURNING owner_job_id',
+        ['pipeline', expiresAt, jobId]
+      )
+      return rows.length > 0
+    },
+    async releasePipelineLock(jobId: string): Promise<void> {
+      if (mode === 'json') {
+        if (jsonPipelineLock === jobId) jsonPipelineLock = null
+        return
+      }
+      await exec!('DELETE FROM pipeline_locks WHERE lock_key = $1 AND owner_job_id = $2', ['pipeline', jobId])
+    },
+    async markStaleRunningAsError(exceptJobId?: string): Promise<number> {
+      let rows: any[]
+      if (mode === 'json') {
+        const all = jsonStore.read('jobs_db.json', [])
+        rows = all.filter((job: any) => job.status === 'running' && job.id !== exceptJobId && job.id !== jsonPipelineLock)
+        for (const row of rows) {
+          const next = { ...row, status: 'error', error: 'Прервано остановкой или перезапуском сервера' }
+          const index = all.findIndex((job: any) => job.id === row.id)
+          if (index >= 0) all[index] = next
+          if (row.search_task_id) {
+            await db.tasks.update(row.search_task_id, {
+              status: 'error',
+              last_error: 'Поиск прерван остановкой или перезапуском сервера'
+            })
+          }
+        }
+        if (rows.length) jsonStore.write('jobs_db.json', all)
+        return rows.length
+      }
+      rows = await exec!(
+        `SELECT j.id, j.data
+         FROM jobs j
+         WHERE j.status = 'running'
+           AND ($1::text IS NULL OR j.id <> $1)
+           AND NOT EXISTS (
+             SELECT 1 FROM pipeline_locks l
+             WHERE l.lock_key = 'pipeline'
+               AND l.owner_job_id = j.id
+               AND l.expires_at > NOW()
+           )`,
+        [exceptJobId || null]
+      )
+      for (const row of rows) {
+        const data = { ...row.data, status: 'error', error: 'Прервано остановкой или перезапуском сервера' }
+        await exec!('UPDATE jobs SET status = \'error\', data = $2 WHERE id = $1', [row.id, JSON.stringify(data)])
+        if (data.search_task_id) {
+          await db.tasks.update(data.search_task_id, {
+            status: 'error',
+            last_error: 'Поиск прерван остановкой или перезапуском сервера'
+          })
+        }
       }
       return rows.length
     },
@@ -347,6 +448,11 @@ export const db = {
       const rows = await exec!('SELECT * FROM sectors')
       return rows.map(r => r.data)
     },
+    async get(id: string): Promise<any | null> {
+      if (mode === 'json') return jsonStore.read('sectors.json', []).find((sector: any) => sector.id === id) || null
+      const rows = await exec!('SELECT data FROM sectors WHERE id = $1', [id])
+      return rows[0]?.data ?? null
+    },
     async create(sector: any): Promise<void> {
       if (mode === 'json') {
         const all = jsonStore.read('sectors.json', [])
@@ -355,6 +461,32 @@ export const db = {
         return
       }
       await exec!('INSERT INTO sectors (id, data) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING', [sector.id, JSON.stringify(sector)])
+    },
+    async update(id: string, patch: any): Promise<any | null> {
+      const current = await db.sectors.get(id)
+      if (!current) return null
+      const updated = { ...current, ...patch, id }
+      if (mode === 'json') {
+        const all = jsonStore.read('sectors.json', [])
+        const index = all.findIndex((sector: any) => sector.id === id)
+        if (index < 0) return null
+        all[index] = updated
+        jsonStore.write('sectors.json', all)
+        return updated
+      }
+      await exec!('UPDATE sectors SET data = $2 WHERE id = $1', [id, JSON.stringify(updated)])
+      return updated
+    },
+    async remove(id: string): Promise<boolean> {
+      if (mode === 'json') {
+        const all = jsonStore.read('sectors.json', [])
+        const next = all.filter((sector: any) => sector.id !== id)
+        if (next.length === all.length) return false
+        jsonStore.write('sectors.json', next)
+        return true
+      }
+      const rows = await exec!('DELETE FROM sectors WHERE id = $1 RETURNING id', [id])
+      return rows.length > 0
     },
   },
 

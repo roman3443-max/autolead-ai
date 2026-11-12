@@ -94,8 +94,8 @@ export default function SearchPage(p: Props) {
                   >
                     <Play size={13} /> Запустить
                   </button>
-                  <button onClick={() => p.onGoLeads()} className="btn-ghost !py-2 text-[13px]" title="К лидам">
-                    <ArrowRight size={13} />
+                  <button onClick={() => p.onGoLeads()} className="btn-ghost !py-2 text-[13px]" title="Открыть базу лидов">
+                    <ArrowRight size={13} /> Открыть лиды
                   </button>
                   <button onClick={() => p.onEditTask(task)} className="btn-ghost !py-2 !px-2.5" title="Изменить">
                     <Pencil size={13} />

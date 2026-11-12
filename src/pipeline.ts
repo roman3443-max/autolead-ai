@@ -44,7 +44,7 @@ interface PipelineOptions {
   scoring?: Partial<ScoringConfig> | null
   useAI?: boolean
   useGeocode?: boolean
-  onKP?: (filename: string, content: string) => void | Promise<void>
+  supplierCatalog?: SupplierCatalog
 }
 
 const DEFAULT_SCORING: ScoringConfig = {
@@ -93,16 +93,16 @@ export function loadSearchDefaults(): SearchDefaults {
 }
 
 // --- Каталог поставщика (supplier_catalog.json) ---
-interface CatalogItem { sku: string; brand: string; name: string; car: string; price: number; stock: number }
-interface SupplierCatalog {
+export interface CatalogItem { sku: string; brand: string; name: string; car: string; price: number; stock: number }
+export interface SupplierCatalog {
   supplier_name?: string
   payment_terms?: string
   delivery?: string
   items: CatalogItem[]
 }
 
-function loadCatalog(): SupplierCatalog {
-  const catalog = readJSONFile('supplier_catalog.json', { items: [] })
+export function loadCatalog(override?: SupplierCatalog): SupplierCatalog {
+  const catalog = override || readJSONFile('supplier_catalog.json', { items: [] })
   if (!catalog.items || catalog.items.length === 0) {
     console.log('⚠️ supplier_catalog.json пуст — КП будут без таблицы товаров')
   } else {
@@ -111,20 +111,23 @@ function loadCatalog(): SupplierCatalog {
   return catalog
 }
 
-function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems = 10): CatalogItem[] {
-  if (!catalog.items.length) return []
-  const brandSet = brands.map(b => b.toLowerCase())
-  const matched = catalog.items.filter(item =>
-    brandSet.some(b => item.brand.toLowerCase().includes(b) || b.includes(item.brand.toLowerCase()))
-  )
-  const pool = matched.length >= 4 ? matched : [...matched, ...catalog.items.filter(i => !matched.includes(i))]
-  return pool.slice(0, maxItems)
+function normalizeBrand(value: string): string {
+  return String(value || '').trim().toLocaleLowerCase('ru-RU').replace(/ё/g, 'е')
 }
 
+function getMatchedBrands(brands: string[], catalog: SupplierCatalog): string[] {
+  const offered = new Set((catalog.items || []).map(item => normalizeBrand(item.brand)).filter(Boolean))
+  return [...new Set(brands.filter(brand => offered.has(normalizeBrand(brand))))]
+}
+
+export function matchCatalogItems(brands: string[], catalog: SupplierCatalog, maxItems = 10): CatalogItem[] {
+  const matched = new Set(getMatchedBrands(brands, catalog).map(normalizeBrand))
+  return (catalog.items || []).filter(item => matched.has(normalizeBrand(item.brand))).slice(0, maxItems)
+}
 function buildProductsTable(items: CatalogItem[]): string {
   if (!items.length) return ''
   const rows = items
-    .map(i => `<tr><td>${i.brand}</td><td>${i.name}</td><td>${i.car}</td><td>${i.sku}</td><td><b>${i.price.toLocaleString('ru-RU')} ₽</b></td><td>${i.stock} шт.</td></tr>`)
+    .map(i => `<tr><td>${escapeHtml(i.brand)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.car)}</td><td>${escapeHtml(i.sku)}</td><td><b>${Number(i.price || 0).toLocaleString('ru-RU')} ₽</b></td><td>${Number(i.stock || 0)} шт.</td></tr>`)
     .join('\n')
   return `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px">
 <thead><tr><th>Бренд</th><th>Наименование</th><th>Применяемость</th><th>Артикул</th><th>Цена</th><th>Остаток</th></tr></thead>
@@ -148,32 +151,7 @@ function isExcludedDomain(hostname: string): boolean {
   return EXCLUDED_DOMAINS.some(d => host === d || host.endsWith('.' + d) || host.includes(d))
 }
 
-// --- Кириллическая транслитерация для email-паттернов ---
-const TRANSLIT: Record<string, string> = {
-  а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'y',к:'k',л:'l',м:'m',
-  н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'h',ц:'ts',ч:'ch',ш:'sh',щ:'sch',
-  ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya'
-}
-
-function transliterate(name: string): string {
-  return name.toLowerCase().split('').map(ch => TRANSLIT[ch] ?? ch).join('').replace(/[^a-z]/g, '')
-}
-
-function generateEmailPatterns(lprName: string, domain: string): string[] {
-  const parts = lprName.trim().split(/\s+/).filter(Boolean)
-  if (parts.length < 2) return []
-  const last = transliterate(parts[0])
-  const first = transliterate(parts[1])
-  const mid = parts[2] ? transliterate(parts[2]) : ''
-  if (!first || !last) return []
-  const patterns = [
-    `${first}.${last}@${domain}`,
-    `${first[0]}${last}@${domain}`,
-    `${last}.${first}@${domain}`
-  ]
-  if (mid) patterns.push(`${first[0]}${mid[0] ?? ''}${last}@${domain}`.replace(/\.\./, '.'))
-  return [...new Set(patterns)].slice(0, 3)
-}
+// Email-паттерны не генерируем: сохраняем только адреса, найденные в источнике.
 
 interface LeadData {
   company_name: string
@@ -181,8 +159,10 @@ interface LeadData {
   city: string
   address?: string
   coordinates?: { lat: number; lng: number }
-  lpr: { name: string; position: string }[]
+  coordinate_source?: 'nominatim'
+  lpr: { name: string; position: string; evidence?: string }[]
   lpr_emails: string[]
+  email_source?: 'website' | 'none'
   brands: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
@@ -190,59 +170,67 @@ interface LeadData {
   wholesale?: boolean
   reason?: string
   matched_skus?: CatalogItem[]
+  matched_brands?: string[]
 }
 
 // --- Геокодинг (Nominatim) с кэшем ---
-interface GeocodeCache { [key: string]: { lat: number; lng: number } }
+interface GeocodeCache { [key: string]: { lat: number; lng: number; source: 'nominatim' } }
 let geocodeCache: GeocodeCache = readJSONFile('geocache.json', {})
 let geocodeDirty = false
-let cityCenterCache: { [city: string]: { lat: number; lng: number } } = {}
+let nominatimQueue: Promise<void> = Promise.resolve()
+let lastNominatimRequestAt = 0
+
+async function acquireNominatimSlot(): Promise<() => void> {
+  const previous = nominatimQueue
+  let release: () => void = () => {}
+  nominatimQueue = new Promise<void>(resolve => { release = resolve })
+  await previous
+  const wait = 1100 - (Date.now() - lastNominatimRequestAt)
+  if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
+  lastNominatimRequestAt = Date.now()
+  return release
+}
 
 async function nominatimGeocode(query: string): Promise<{ lat: number; lng: number } | null> {
+  const release = await acquireNominatimSlot()
+  const ctrl = new AbortController()
+  const timeout = setTimeout(() => ctrl.abort(), 12000)
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 12000)
     const res = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ru&q=${encodeURIComponent(query)}`,
       { headers: { 'User-Agent': 'autolead-ai/1.0 (lead generation tool)' }, signal: ctrl.signal }
     )
-    clearTimeout(t)
     if (!res.ok) return null
     const data: any = await res.json()
     if (Array.isArray(data) && data.length > 0) {
-      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) }
+      const lat = Number(data[0].lat)
+      const lng = Number(data[0].lon)
+      if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng }
     }
     return null
   } catch {
     return null
+  } finally {
+    clearTimeout(timeout)
+    release()
   }
 }
 
-async function getCoordinates(companyName: string, city: string, useGeocode = true): Promise<{ lat: number; lng: number }> {
-  const cacheKey = `${companyName}|${city}`
-  if (geocodeCache[cacheKey]) return geocodeCache[cacheKey]
+export async function getCoordinates(companyName: string, city: string, useGeocode = true, address = ''): Promise<GeocodeCache[string] | undefined> {
+  const cacheKey = address ? `${companyName}|${city}|${address}` : `${companyName}|${city}`
+  const cached = geocodeCache[cacheKey]
+  // Старые значения кэша могли быть случайными точками; используем только помеченные результаты геокодера.
+  if (cached?.source === 'nominatim') return cached
+  if (!useGeocode) return undefined
 
-  if (useGeocode) {
-    const exact = await nominatimGeocode(`${companyName}, ${city}`)
-    if (exact) {
-      geocodeCache[cacheKey] = exact
-      geocodeDirty = true
-      return exact
-    }
-  }
+  const query = [address, companyName, city].filter(Boolean).join(', ')
+  const result = await nominatimGeocode(query)
+  if (!result) return undefined
 
-  if (!cityCenterCache[city]) {
-    cityCenterCache[city] = (useGeocode && await nominatimGeocode(city)) || { lat: 56.838011, lng: 60.597474 }
-  }
-  const center = cityCenterCache[city]
-  // Если компанию не нашли — точка в районе центра города (без этого метка не появится на карте)
-  const fallback = {
-    lat: center.lat + (Math.random() - 0.5) * 0.04,
-    lng: center.lng + (Math.random() - 0.5) * 0.04
-  }
-  geocodeCache[cacheKey] = fallback
+  const coordinates = { ...result, source: 'nominatim' as const }
+  geocodeCache[cacheKey] = coordinates
   geocodeDirty = true
-  return fallback
+  return coordinates
 }
 
 function saveGeocodeCache() {
@@ -256,8 +244,12 @@ function saveGeocodeCache() {
 }
 
 // --- AI: извлечение ЛПР, размера бизнеса, оптовых сигналов одним вызовом ---
+function normalizeEvidence(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
 interface AiExtraction {
-  lpr: { name: string; position: string }[]
+  lpr: { name: string; position: string; evidence: string }[]
   business_size: 'small' | 'medium' | 'large' | 'unknown'
   wholesale: boolean
   reason: string
@@ -269,21 +261,15 @@ async function extractWithGemini(companyName: string, domain: string, content: s
     { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
     { timeout: 60000 }
   )
-  const prompt = `Проанализируй текст сайта компании "${companyName}" (${domain}) и ответь СТРОГО в формате JSON:
-{
-  "lpr": [{"name": "Фамилия Имя", "position": "должность"}],
-  "business_size": "small|medium|large|unknown",
-  "wholesale": true/false,
-  "reason": "одно предложение: почему этому лиду стоит продавать"
-}
-Правила:
-- lpr: до 2 реальных людей из текста (директор, руководитель, менеджер по закупкам). Если людей нет — пустой массив.
-- business_size: large — сеть/филиалы/50+ сотрудников/крупный склад; medium — 10-50 сотрудников, несколько точек; small — один магазин/СТО; unknown — непонятно.
-- wholesale: true если есть признаки опта (оптовые цены, "опт и розница", дистрибьютор, B2B).
-Текст сайта (первые 8000 символов):
-"""
-${content.slice(0, 8000)}
-"""`
+  const prompt = 'Проанализируй текст сайта компании "' + companyName + '" (' + domain + ') и ответь СТРОГО в формате JSON:\n' +
+    '{\n  "lpr": [{"name": "Фамилия Имя", "position": "должность", "evidence": "точная цитата с сайта, содержащая имя"}],\n' +
+    '  "business_size": "small|medium|large|unknown",\n  "wholesale": true/false,\n' +
+    '  "reason": "одно предложение: почему этому лиду стоит продавать"\n}\n' +
+    'Правила:\n' +
+    '- lpr: до 2 людей, чьи имя и должность прямо подтверждаются текстом. Приведи точную цитату из текста без пересказа. Если цитаты нет — не включай человека.\n' +
+    '- business_size: large — сеть/филиалы/50+ сотрудников/крупный склад; medium — 10-50 сотрудников, несколько точек; small — один магазин/СТО; unknown — непонятно.\n' +
+    '- wholesale: true только при явных признаках опта в тексте (оптовые цены, "опт и розница", дистрибьютор, B2B).\n' +
+    'Текст сайта (первые 8000 символов):\n"""\n' + content.slice(0, 8000) + '\n"""'
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -292,11 +278,18 @@ ${content.slice(0, 8000)}
       const jsonMatch = text.match(/\{[\s\S]*\}/)
       if (!jsonMatch) throw new Error('AI вернул не JSON')
       const parsed = JSON.parse(jsonMatch[0])
+      const source = normalizeEvidence(content)
+      const lpr = Array.isArray(parsed.lpr) ? parsed.lpr.slice(0, 2).map((item: any) => ({
+        name: String(item.name || '').trim(),
+        position: String(item.position || 'Контактное лицо').trim(),
+        evidence: String(item.evidence || '').trim()
+      })).filter((item: any) => {
+        const quote = normalizeEvidence(item.evidence)
+        const name = normalizeEvidence(item.name)
+        return Boolean(name && quote && quote.includes(name) && source.includes(quote))
+      }) : []
       return {
-        lpr: Array.isArray(parsed.lpr) ? parsed.lpr.slice(0, 2).map((l: any) => ({
-          name: String(l.name || '').trim(),
-          position: String(l.position || 'Контактное лицо').trim()
-        })).filter((l: any) => l.name) : [],
+        lpr,
         business_size: ['small', 'medium', 'large'].includes(parsed.business_size) ? parsed.business_size : 'unknown',
         wholesale: Boolean(parsed.wholesale),
         reason: String(parsed.reason || '').slice(0, 300)
@@ -305,29 +298,41 @@ ${content.slice(0, 8000)}
       const msg = String(err?.message || err)
       const isRetryable = msg.includes('503') || msg.includes('429') || msg.includes('aborted')
       if (!isRetryable || attempt === 3) {
-        console.log(`  ⚠️ AI-извлечение не удалось (${msg.slice(0, 80)})`)
+        console.log('  ⚠️ AI-извлечение не удалось (' + msg.slice(0, 80) + ')')
         return null
       }
-      console.log(`  ⏳ AI занят, повтор ${attempt + 1}/3...`)
+      console.log('  ⏳ AI занят, повтор ' + (attempt + 1) + '/3...')
       await new Promise(r => setTimeout(r, 8000))
     }
   }
   return null
 }
 
-// --- Регэксп-фолбэки (если Gemini недоступен) ---
-function extractLPRRegex(content: string): { name: string; position: string }[] {
-  const lpr: { name: string; position: string }[] = []
-  const patterns = [/директор[:\s]+([А-Яа-яЁё\s]+)/gi, /руководитель[:\s]+([А-Яа-яЁё\s]+)/gi, /менеджер[:\s]+([А-Яа-яЁё\s]+)/gi]
+// --- Регэксп-извлечение ЛПР только при наличии имени и должности в тексте ---
+function extractLPRRegex(content: string): { name: string; position: string; evidence: string }[] {
+  const found: { name: string; position: string; evidence: string }[] = []
+  const patterns = [
+    {
+      regex: /((?:генеральный\s+)?директор|руководитель|менеджер\s+по\s+закупкам)\s*[:—-]\s*([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2})/giu,
+      position: (match: RegExpMatchArray) => match[1],
+      name: (match: RegExpMatchArray) => match[2]
+    },
+    {
+      regex: /([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2})\s*[,—-]\s*((?:генеральный\s+)?директор|руководитель|менеджер\s+по\s+закупкам)/giu,
+      position: (match: RegExpMatchArray) => match[2],
+      name: (match: RegExpMatchArray) => match[1]
+    }
+  ]
   for (const pattern of patterns) {
-    const matches = [...content.matchAll(pattern)]
-    for (const match of matches) {
-      if (lpr.length >= 2) break
-      lpr.push({ name: match[1].trim(), position: 'Контактное лицо' })
+    for (const match of content.matchAll(pattern.regex)) {
+      const name = pattern.name(match).trim()
+      if (!found.some(person => normalizeEvidence(person.name) === normalizeEvidence(name))) {
+        found.push({ name, position: pattern.position(match).trim(), evidence: match[0].trim() })
+      }
+      if (found.length >= 2) return found
     }
   }
-  if (lpr.length === 0) lpr.push({ name: 'Руководитель', position: 'Директор' })
-  return lpr.slice(0, 2)
+  return found
 }
 
 function extractBusinessSizeRegex(content: string): 'small' | 'medium' | 'large' | 'unknown' {
@@ -348,9 +353,10 @@ function extractEmails(content: string): string[] {
   return [...new Set(emails)].filter(e => !e.match(/\.(png|jpg|jpeg|gif|webp|svg)$/i)).slice(0, 5)
 }
 
-function extractBrands(content: string): string[] {
+function extractBrands(content: string, offeredBrands: string[] = []): string[] {
   const known = ['Toyota', 'Nissan', 'Honda', 'Mazda', 'Mitsubishi', 'Bosch', 'Denso', 'TRW', 'ZF', 'Continental', 'LADA', 'ВАЗ', 'ГАЗ', 'УАЗ', 'КАМАЗ', 'Ford', 'Renault', 'Chevrolet']
-  const found = known.filter(b => content.toLowerCase().includes(b.toLowerCase()))
+  const candidates = [...new Set([...known, ...offeredBrands.filter(Boolean)])]
+  const found = candidates.filter(b => content.toLowerCase().includes(b.toLowerCase()))
   return found.length > 0 ? found.slice(0, 6) : ['Автозапчасти']
 }
 
@@ -387,13 +393,15 @@ function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {
 
 // Пересчёт скоринга существующих лидов текущей моделью (для старых записей
 // с устаревшим скором и для смены scoring_config)
-export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null): any {
+export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null, catalogOverride?: SupplierCatalog): any {
   const cfg = loadScoringConfig(overrides)
+  const catalog = loadCatalog(catalogOverride)
+  const matched_brands = getMatchedBrands(Array.isArray(lead.brands) ? lead.brands : [], catalog)
   const size = ['small', 'medium', 'large'].includes(lead.business_size) ? lead.business_size : 'unknown'
   const score = calculateLeadScore(cfg, {
     lprCount: Array.isArray(lead.lpr) ? lead.lpr.length : 0,
-    emailsCount: Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
-    brandsCount: Array.isArray(lead.brands) ? lead.brands.length : 0,
+    emailsCount: lead.email_source === 'website' && Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
+    brandsCount: matched_brands.length,
     businessSize: size,
     wholesale: Boolean(lead.wholesale),
     contentLength: 0 // у старых лидов нет исходного текста сайта — не учитываем
@@ -401,7 +409,7 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
   // Контент не сохраняем у лидов, поэтому чтобы не занижать всех старых записей,
   // даём половину веса контента по умолчанию
   const withContentFallback = Math.min(100, score + Math.round(cfg.weights.content / 2))
-  return { ...lead, lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
+  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
 }
 
 // --- Этап 1: Поиск компаний через Tavily ---
@@ -451,7 +459,7 @@ export async function searchCompanies(city: string, industry: string, limit: num
 export async function enrichCompanyData(companies: any[], city: string, onProgress?: (processed: number, total: number) => void, options?: PipelineOptions) {
   console.log('🕷️ Обогащение данных...')
   const scoringCfg = loadScoringConfig(options?.scoring)
-  const catalog = loadCatalog()
+  const catalog = loadCatalog(options?.supplierCatalog)
   const useAI = options?.useAI ?? true
   const enrichedLeads: LeadData[] = []
 
@@ -477,17 +485,19 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const wholesale = ai ? ai.wholesale : hasWholesaleSignals(content)
       const reason = ai?.reason || ''
 
-      // Email: реальные с сайта + сгенерированные паттерны для найденных ЛПР
+      // Email: только адреса из текста сайта; принадлежность ЛПР не предполагается.
       const siteEmails = extractEmails(content)
-      const generated = lpr.flatMap(p => generateEmailPatterns(p.name, company.domain))
-      const lpr_emails = [...new Set([...siteEmails, ...generated])].slice(0, 5)
+      const lpr_emails = siteEmails
+      const email_source = siteEmails.length > 0 ? 'website' : 'none'
 
-      const brands = extractBrands(content)
-      const coordinates = await getCoordinates(company.company_name, city, options?.useGeocode ?? true)
+      const brands = extractBrands(content, catalog.items.map(item => item.brand))
+      const matched_brands = getMatchedBrands(brands, catalog)
+      const address = extractAddress(content)
+      const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true, address)
       const lead_score = calculateLeadScore(scoringCfg, {
         lprCount: lpr.length,
-        emailsCount: lpr_emails.length,
-        brandsCount: brands.length,
+        emailsCount: siteEmails.length,
+        brandsCount: matched_brands.length,
         businessSize,
         wholesale,
         contentLength: content.length
@@ -499,11 +509,14 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         company_name: company.company_name,
         domain: company.domain,
         city,
-        address: extractAddress(content),
-        coordinates,
+        address,
+        coordinates: geocoding ? { lat: geocoding.lat, lng: geocoding.lng } : undefined,
+        coordinate_source: geocoding?.source,
         lpr,
         lpr_emails,
+        email_source,
         brands,
+        matched_brands,
         lead_score,
         lead_tier,
         business_size: businessSize,
@@ -512,7 +525,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         matched_skus
       })
 
-      console.log(`  ✅ ${company.domain}: ЛПР=${lpr.length}, Email=${lpr_emails.length} (сайт ${siteEmails.length} + паттерны ${lpr_emails.length - siteEmails.length}), Размер=${businessSize}, Опт=${wholesale}, Скор=${lead_score} (${lead_tier})`)
+      console.log(`  ✅ ${company.domain}: ЛПР с цитатой=${lpr.length}, email с сайта=${lpr_emails.length}, геокодирование=${geocoding ? 'Nominatim' : 'нет'}, Размер=${businessSize}, Опт=${wholesale}, Скор=${lead_score} (${lead_tier})`)
     } catch (error) {
       console.error(`  ❌ Ошибка при парсинге ${company.domain}:`, error)
     }
@@ -523,80 +536,57 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
   return enrichedLeads
 }
 
-// --- Этап 3: Генерация КП через Gemini (сохраняем как HTML) ---
-export async function generateKP(lead: LeadData, supplierName: string, hooks?: { onKP?: (filename: string, content: string) => void | Promise<void> }) {
-  console.log(`📝 Генерация КП для ${lead.company_name}...`)
+// --- Формирование КП по карточке поставщика и каталогу (быстрый HTML-шаблон) ---
+function escapeHtml(value: unknown): string {
+  const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+  return String(value ?? '').replace(/[&<>"']/g, c => entities[c] || c)
+}
 
+// Формирует фактическое КП из карточки поставщика и совпавших товаров без ожидания LLM.
+export async function generateKP(lead: any, supplierInput: any, hooks?: { onKP?: (filename: string, content: string) => void | Promise<void> }) {
+  console.log(`📝 Формирование КП для ${lead.company_name}...`)
   try {
-    const model = genAI.getGenerativeModel(
-      { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
-      { timeout: 60000 }
-    )
-
-    const productsTable = buildProductsTable(lead.matched_skus || [])
+    const supplier = typeof supplierInput === 'string' ? { name: supplierInput } : (supplierInput || {})
+    const products = Array.isArray(lead.matched_skus) ? lead.matched_skus : []
+    const productsTable = buildProductsTable(products)
+    const recipient = Array.isArray(lead.lpr) && lead.lpr[0]?.name ? `Уважаемый(ая) ${escapeHtml(lead.lpr[0].name)}!` : 'Добрый день!'
+    const supplierName = escapeHtml(supplier.name || supplier.supplier_name || 'Поставщик')
+    const contactLines = [
+      supplier.contact && `Контактное лицо: ${escapeHtml(supplier.contact)}`,
+      supplier.phone && `Телефон: ${escapeHtml(supplier.phone)}`,
+      supplier.email && `Email: ${escapeHtml(supplier.email)}`,
+      supplier.website && `Сайт: ${escapeHtml(supplier.website)}`,
+      supplier.inn && `ИНН: ${escapeHtml(supplier.inn)}`,
+      supplier.address && `Адрес: ${escapeHtml(supplier.address)}`
+    ].filter(Boolean).map(line => `<p>${line}</p>`).join('')
+    const terms = [
+      supplier.payment_terms && `<li><b>Оплата:</b> ${escapeHtml(supplier.payment_terms)}</li>`,
+      supplier.delivery && `<li><b>Доставка:</b> ${escapeHtml(supplier.delivery)}</li>`,
+      supplier.warranty && `<li><b>Гарантия:</b> ${escapeHtml(supplier.warranty)}</li>`,
+      supplier.offer_validity && `<li><b>Срок действия предложения:</b> ${escapeHtml(supplier.offer_validity)}</li>`
+    ].filter(Boolean).join('')
+    const customOffer = supplier.offer_text ? `<p>${escapeHtml(supplier.offer_text).replace(/\n/g, '<br>')}</p>` : ''
+    const brands = (lead.matched_brands || []).map(escapeHtml).join(', ')
     const productsBlock = productsTable
-      ? `Обязательно вставь в раздел про ассортимент ТАБЛИЦУ ТОВАРОВ (используй ровно эти данные, цены не меняй):\n${productsTable}\n`
-      : ''
-
-    const prompt = `
-Создай персонализированное коммерческое предложение от поставщика "${supplierName}" для компании "${lead.company_name}".
-Информация о клиенте: Сайт: ${lead.domain}, Город: ${lead.city}, ЛПР: ${lead.lpr.map(l => `${l.name} (${l.position})`).join(', ')}, Бренды: ${lead.brands.join(', ')}${lead.business_size && lead.business_size !== 'unknown' ? `, Размер бизнеса: ${lead.business_size === 'large' ? 'крупный' : lead.business_size === 'medium' ? 'средний' : 'малый'}` : ''}.
-${productsBlock}
-Требования:
-1. Заголовок: "Коммерческое предложение"
-2. Приветствие по имени ЛПР
-3. Краткое представление поставщика
-4. Ассортимент (упомяни бренды клиента${productsTable ? ' и вставь таблицу товаров выше' : ''})
-5. Условия сотрудничества (оптовые цены, доставка)
-6. Призыв к действию и контакты.
-Формат: Чистый HTML с базовыми тегами (<h1>, <h2>, <p>, <ul>, <li>, <b> и <table> для товаров), без <html> и <body>, только контент.
-`
-
-    let kpText = ''
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const result = await model.generateContent(prompt)
-        kpText = result.response.text()
-        break
-      } catch (err: any) {
-        const is503 = String(err?.message || err).includes('503')
-        if (!is503 || attempt === 3) throw err
-        console.log(`  ⏳ Gemini перегружен (503), повтор ${attempt + 1}/3...`)
-        await new Promise(r => setTimeout(r, 8000))
-      }
-    }
-
-    // Если AI почему-то не вставил таблицу — добавляем сами после заголовка "Ассортимент"
-    if (productsTable && !kpText.includes('<table')) {
-      const insertPoint = kpText.search(/<h2>[^<]*ассортимент|<h2>[^<]*предложение/i)
-      if (insertPoint >= 0) {
-        const h2end = kpText.indexOf('</h2>', insertPoint)
-        kpText = kpText.slice(0, h2end + 5) + '\n' + productsTable + kpText.slice(h2end + 5)
-      } else {
-        kpText += '\n<h2>Ассортимент и цены</h2>\n' + productsTable
-      }
-    }
-
-    const fileName = `${lead.company_name.replace(/[^a-z0-9а-яё]/gi, '_')}.html`
-    // Локальная копия (fallback-режим без БД) + колбэк для сохранения в БД
+      ? `<h2>Предложение по ассортименту${brands ? `: ${brands}` : ''}</h2>${productsTable}`
+      : `<h2>Ассортимент</h2><p>Подготовим предложение по интересующим вас брендам и артикулам после уточнения потребности.</p>`
+    const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Коммерческое предложение — ${escapeHtml(lead.company_name)}</title><style>body{font:15px/1.55 Arial,sans-serif;color:#172033;max-width:900px;margin:36px auto;padding:0 24px}h1{font-size:26px}h2{font-size:18px;margin-top:28px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#f1f5f9}.muted{color:#64748b}</style></head><body><h1>Коммерческое предложение</h1><p class="muted">${new Date().toLocaleDateString('ru-RU')}</p><p>${recipient}</p><p>Компания <b>${escapeHtml(lead.company_name)}</b>${lead.city ? `, ${escapeHtml(lead.city)}` : ''}.</p><p>${supplierName} предлагает рассмотреть условия сотрудничества по поставке автозапчастей.</p>${customOffer}${productsBlock}${terms ? `<h2>Условия сотрудничества</h2><ul>${terms}</ul>` : ''}<h2>Связаться с поставщиком</h2>${contactLines || '<p>Контактные данные поставщика не заполнены.</p>'}<p>Будем рады уточнить вашу потребность и подготовить актуальный расчёт.</p></body></html>`
+    const slug = String(lead.company_name || 'lead').replace(/[^a-z0-9а-яё]/gi, '_').slice(0, 55) || 'lead'
+    const safeId = String(lead.id || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
+    const fileName = `${slug}_${safeId}.html`
     try {
       const filePath = path.join(rootDir, 'kp_final', fileName)
-      if (!fs.existsSync(path.join(rootDir, 'kp_final'))) {
-        fs.mkdirSync(path.join(rootDir, 'kp_final'))
-      }
-      fs.writeFileSync(filePath, kpText, 'utf-8')
+      if (!fs.existsSync(path.join(rootDir, 'kp_final'))) fs.mkdirSync(path.join(rootDir, 'kp_final'))
+      fs.writeFileSync(filePath, html, 'utf-8')
     } catch { /* локальная копия не критична */ }
-    if (hooks?.onKP) {
-      try { await hooks.onKP(fileName, kpText) } catch (e) { console.error('⚠️ Не удалось сохранить КП в БД:', e) }
-    }
-    console.log(`✅ КП сохранено: ${fileName}`)
+    if (hooks?.onKP) await hooks.onKP(fileName, html)
+    console.log(`✅ КП сформировано: ${fileName}`)
     return fileName
   } catch (error) {
-    console.error('❌ Ошибка генерации КП:', error)
+    console.error('❌ Ошибка формирования КП:', error)
     return null
   }
 }
-
 // --- Главная функция ---
 export async function runPipeline(
   city: string = 'Екатеринбург',
@@ -616,13 +606,7 @@ export async function runPipeline(
     // Компании нашлись, но ни один сайт не спарсился — почти всегда это проблема Firecrawl
     throw new Error(`Firecrawl: найдено ${companies.length} компаний, но ни один сайт не удалось спарсить. Проверьте FIRECRAWL_API_KEY и баланс кредитов.`)
   }
-  for (let i = 0; i < leads.length; i++) {
-    onProgress?.('kp', i, leads.length)
-    const kpFile = await generateKP(leads[i], supplierName, { onKP: options?.onKP })
-    if (kpFile) (leads[i] as any).pdf_file = kpFile
-  }
   saveGeocodeCache()
-  onProgress?.('done', leads.length, leads.length)
   console.log('✅ Пайплайн завершен!')
   return leads
 }

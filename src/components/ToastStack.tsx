@@ -15,7 +15,7 @@ const STYLES = {
 
 export default function ToastStack({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
-    <div className="fixed bottom-5 right-5 z-[2000] flex flex-col gap-2 w-[min(92vw,360px)]">
+    <div className="fixed bottom-5 right-5 z-[4000] flex flex-col gap-2 w-[min(92vw,360px)]">
       {toasts.map(t => (
         <div
           key={t.id}

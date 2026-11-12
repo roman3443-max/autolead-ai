@@ -32,3 +32,4 @@ yarn-error.log*
 Thumbs.db
 vck.js
 users.json
+jobs_db.json

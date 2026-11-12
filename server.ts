@@ -1,13 +1,12 @@
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
-import { runPipeline, rescoreLead, loadSearchDefaults } from './src/pipeline.ts'
+import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
-import { authMiddleware, loginHandler, requireAdmin } from './src/auth.ts'
+import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
-const rootDir = process.cwd()
 
 // Разрешённые источники (CORS). Переопределяется переменной ALLOWED_ORIGINS через запятую
 const DEFAULT_ORIGINS = [
@@ -49,7 +48,69 @@ const runCooldown = (req: any, res: any, next: any) => {
   next()
 }
 
-app.use('/kp_final', express.static(path.join(rootDir, 'kp_final')))
+function getSupplierCatalog(profile: any = {}) {
+  const fallback = loadCatalog()
+  return {
+    ...fallback,
+    supplier_name: profile.name || fallback.supplier_name || 'УралАвтоОпт',
+    payment_terms: profile.payment_terms || fallback.payment_terms || '',
+    delivery: profile.delivery || fallback.delivery || '',
+    items: Array.isArray(profile.catalogItems) ? profile.catalogItems : fallback.items,
+  }
+}
+function normalizeLeadDomain(value: unknown): string {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`)
+    const host = url.hostname.toLowerCase().replace(/^www\./, '')
+    return host.includes('.') || host === 'localhost' ? host : ''
+  } catch { return '' }
+}
+
+function normalizeLeadText(value: unknown): string {
+  return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/gi, ' ').trim()
+}
+
+function getLeadDedupeKeys(lead: any): string[] {
+  const keys: string[] = []
+  const domain = normalizeLeadDomain(lead.domain)
+  if (domain) keys.push(`domain:${domain}`)
+  const company = normalizeLeadText(lead.company_name)
+  if (company) keys.push(`company:${company}|city:${normalizeLeadText(lead.city)}`)
+  return keys
+}
+function hasValidCoordinates(coordinates: any): boolean {
+  if (!coordinates || coordinates.lat === '' || coordinates.lng === '' || coordinates.lat === null || coordinates.lng === null) return false
+  const lat = Number(coordinates.lat), lng = Number(coordinates.lng)
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180
+}
+
+function pointInRing(lng: number, lat: number, ring: [number, number][]): boolean {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j]
+    const cross = (lng - xi) * (yj - yi) - (lat - yi) * (xj - xi)
+    const onSegment = Math.abs(cross) < 1e-10 &&
+      lng >= Math.min(xi, xj) - 1e-10 && lng <= Math.max(xi, xj) + 1e-10 &&
+      lat >= Math.min(yi, yj) - 1e-10 && lat <= Math.max(yi, yj) + 1e-10
+    if (onSegment) return true
+    const intersects = ((yi > lat) !== (yj > lat)) &&
+      (lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)
+    if (intersects) inside = !inside
+  }
+  return inside
+}
+
+async function assignLeadToKnownSector(lead: any): Promise<void> {
+  if (!hasValidCoordinates(lead?.coordinates)) return
+  const sectors = await db.sectors.list()
+  const sector = sectors.find((candidate: any) => {
+    const ring = candidate?.polygon?.geometry?.coordinates?.[0]
+    return Array.isArray(ring) && ring.length >= 4 && pointInRing(lead.coordinates.lng, lead.coordinates.lat, ring)
+  })
+  if (sector) await db.leads.update(lead.id, { sector_id: sector.id, assigned_manager_id: sector.manager_id })
+}
 
 // Безопасное имя файла КП (защита от path traversal)
 const kpFileName = (fileName: any): string | null => {
@@ -59,31 +120,222 @@ const kpFileName = (fileName: any): string | null => {
 }
 
 // ---------- auth ----------
-app.get('/api/health', async (req, res) => {
-  let counts: any = null
-  try {
-    counts = {
-      leads: (await db.leads.list()).length,
-      tasks: (await db.tasks.list()).length,
-      users: (await db.users.list()).length
-    }
-  } catch { /* ignore */ }
-  let dbHost: string | null = null
-  try { dbHost = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null } catch { dbHost = 'invalid-url' }
-  res.json({ ok: true, mode: dbMode(), counts, hasDatabaseUrl: Boolean(process.env.DATABASE_URL), dbHost })
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true })
 })
 
 app.post('/api/auth/login', loginHandler)
 app.get('/api/auth/me', authMiddleware, (req: any, res) => res.json(req.user))
 app.use('/api', authMiddleware)
 
+app.post('/api/map/city-center', async (req, res) => {
+  const city = String(req.body?.city || '').trim()
+  if (city.length < 2 || city.length > 100) return res.status(400).json({ error: 'Укажите город' })
+  if ([...city].some(char => char.codePointAt(0) === 0xfffd)) return res.status(400).json({ error: 'Название города содержит ошибку кодировки' })
+  try {
+    const coordinates = await getCoordinates('', city, true)
+    if (!coordinates) return res.status(404).json({ error: `Не удалось найти город «${city}»` })
+    res.json({ city, coordinates: { lat: coordinates.lat, lng: coordinates.lng } })
+  } catch (error) {
+    console.error('❌ Ошибка поиска центра города:', error)
+    res.status(500).json({ error: 'Не удалось определить центр города' })
+  }
+})
+
 // ---------- leads ----------
 app.get('/api/leads', async (req, res) => {
   res.json(await db.leads.list())
 })
 
+app.post('/api/leads/geocode-missing', async (req, res) => {
+  const rawIds = req.body?.leadIds
+  if (!Array.isArray(rawIds) || rawIds.length === 0) return res.status(400).json({ error: 'Не выбраны лиды для поиска координат' })
+  if (rawIds.length > 50) return res.status(400).json({ error: 'За один запуск можно обработать не более 50 лидов' })
+  const ids = new Set(rawIds.map((id: any) => String(id)).filter(Boolean))
+  try {
+    const allLeads = await db.leads.list()
+    const candidates = allLeads.filter((lead: any) => ids.has(String(lead.id)) && !hasValidCoordinates(lead.coordinates))
+    let geocoded = 0
+    let failed = 0
+    for (const lead of candidates) {
+      if (!String(lead.city || '').trim()) {
+        failed++
+        continue
+      }
+      const coordinates = await getCoordinates(String(lead.company_name || ''), String(lead.city || ''), true, String(lead.address || ''))
+      if (!coordinates) {
+        failed++
+        continue
+      }
+      const updatedLead = {
+        ...lead,
+        coordinates: { lat: coordinates.lat, lng: coordinates.lng },
+        coordinate_source: 'nominatim',
+      }
+      await db.leads.update(lead.id, {
+        coordinates: updatedLead.coordinates,
+        coordinate_source: updatedLead.coordinate_source,
+      })
+      await assignLeadToKnownSector(updatedLead)
+      geocoded++
+    }
+    res.json({ requested: ids.size, processed: candidates.length, geocoded, failed, remaining: failed })
+  } catch (error) {
+    console.error('❌ Ошибка геокодирования лидов:', error)
+    res.status(500).json({ error: 'Не удалось найти координаты для выбранных лидов' })
+  }
+})
+
+app.post('/api/leads/import', async (req, res) => {
+  const rows = req.body?.leads
+  if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ error: 'В CSV нет строк для импорта' })
+  if (rows.length > 1000) return res.status(400).json({ error: 'За один раз можно импортировать не более 1000 строк' })
+  const dryRun = req.body?.dryRun === true
+  const sourceName = String(req.body?.sourceName || 'Внешняя база').trim().slice(0, 120)
+  try {
+    const existingLeads = await db.leads.list()
+    const knownKeys = new Set(existingLeads.flatMap((lead: any) => getLeadDedupeKeys(lead)))
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const catalog = getSupplierCatalog(supplier)
+    const scoring = (await db.settings.get('scoring_config')) || {}
+    const newPreview: any[] = []
+    const duplicatePreview: any[] = []
+    const invalidRows: any[] = []
+    let imported = 0
+    let importable = 0
+    let duplicates = 0
+
+    for (const [index, raw] of rows.entries()) {
+      const company_name = String(raw?.company_name || '').trim().slice(0, 200)
+      if (company_name.length < 2) {
+        invalidRows.push({ row: index + 1, company_name, reason: 'Не указано название компании' })
+        continue
+      }
+      const domain = normalizeLeadDomain(raw?.domain || raw?.website)
+      const city = String(raw?.city || '').trim().slice(0, 100)
+      const industry = String(raw?.industry || '').trim().slice(0, 120)
+      const rawEmails = Array.isArray(raw?.lpr_emails) ? raw.lpr_emails : String(raw?.email || '').split(/[;,|]/)
+      const lpr_emails = [...new Set(rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
+      const rawLpr = Array.isArray(raw?.lpr) ? raw.lpr : (raw?.lpr_name ? [{ name: raw.lpr_name, position: raw.lpr_position || '' }] : [])
+      const lpr = rawLpr.slice(0, 5).map((person: any) => ({ name: String(person?.name || '').trim(), position: String(person?.position || '').trim(), evidence: '' })).filter((person: any) => person.name)
+      const rawBrands = Array.isArray(raw?.brands) ? raw.brands : String(raw?.brands || '').split(/[;,|]/)
+      const brands = [...new Set(rawBrands.map((brand: any) => String(brand).trim()).filter(Boolean))].slice(0, 30)
+      const lat = Number(raw?.lat), lng = Number(raw?.lng)
+      const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+      const lead: any = {
+        company_name, domain, city, industry, address: String(raw?.address || '').trim().slice(0, 250),
+        phone: String(raw?.phone || '').trim().slice(0, 80),
+        coordinates: hasCoordinates ? { lat, lng } : undefined,
+        coordinate_source: hasCoordinates ? 'import' : undefined,
+        lpr, lpr_emails, email_source: lpr_emails.length ? 'import' : 'none', brands,
+        business_size: 'unknown', wholesale: false, reason: '', matched_brands: [], matched_skus: [],
+        status: 'new', pdf_file: null, comments: [],
+        status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
+        source_type: 'import', source_name: sourceName, search_task_name: `Импорт: ${sourceName}`,
+      }
+      const keys = getLeadDedupeKeys(lead)
+      if (keys.some(key => knownKeys.has(key))) {
+        duplicates++
+        if (duplicatePreview.length < 20) duplicatePreview.push({ row: index + 1, company_name, domain, city })
+        keys.forEach(key => knownKeys.add(key))
+        continue
+      }
+      const scored = rescoreLead(lead, scoring, catalog)
+      importable++
+      if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier })
+      if (!dryRun) {
+        const id = `lead_import_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`
+        const importedLead = { ...scored, id }
+        await db.leads.create(importedLead)
+        await assignLeadToKnownSector(importedLead)
+        imported++
+      }
+      keys.forEach(key => knownKeys.add(key))
+    }
+    res.json({ dryRun, total: rows.length, importable, imported, duplicates, invalid: invalidRows.length, newPreview, duplicatePreview, invalidRows })
+  } catch (error) {
+    console.error('❌ Ошибка импорта лидов:', error)
+    res.status(500).json({ error: 'Не удалось обработать файл импорта' })
+  }
+})
+app.post('/api/leads/:id/follow-up', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  const body = req.body || {}
+  let nextContactAt = lead.next_contact_at || null
+  let scheduleChanged = false
+  if (Object.prototype.hasOwnProperty.call(body, 'next_contact_at')) {
+    if (body.next_contact_at === null || body.next_contact_at === '') {
+      nextContactAt = null
+    } else {
+      const parsed = new Date(body.next_contact_at)
+      if (!Number.isFinite(parsed.getTime())) return res.status(400).json({ error: 'Укажите корректные дату и время следующего контакта' })
+      nextContactAt = parsed.toISOString()
+    }
+    scheduleChanged = nextContactAt !== (lead.next_contact_at || null)
+  }
+  const note = String(body.note || '').trim()
+  if (note.length > 2000) return res.status(400).json({ error: 'Заметка не должна превышать 2000 символов' })
+  if (body.next_contact_at === undefined && !note) return res.status(400).json({ error: 'Укажите дату контакта или добавьте заметку' })
+
+  const activities = Array.isArray(lead.activities) ? [...lead.activities] : []
+  if (note || scheduleChanged) {
+    activities.unshift({
+      id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      created_at: new Date().toISOString(),
+      note: note || (nextContactAt ? 'Назначен следующий контакт' : 'Дата следующего контакта снята'),
+      next_contact_at: nextContactAt,
+    })
+  }
+  const updated = await db.leads.update(lead.id, {
+    next_contact_at: nextContactAt,
+    activities: activities.slice(0, 100),
+  })
+  res.json(updated)
+})
+
 app.put('/api/leads/:id', async (req, res) => {
-  const body = { ...req.body }
+  const body: any = { ...req.body }
+  if (body.company_name !== undefined) {
+    body.company_name = String(body.company_name || '').trim()
+    if (body.company_name.length < 2 || body.company_name.length > 200) {
+      return res.status(400).json({ error: 'Название компании должно быть от 2 до 200 символов' })
+    }
+  }
+  if (body.domain !== undefined) {
+    const rawDomain = String(body.domain || '').trim()
+    const normalizedDomain = rawDomain ? normalizeLeadDomain(rawDomain) : ''
+    if (rawDomain && !normalizedDomain) return res.status(400).json({ error: 'Укажите корректный сайт или домен' })
+    body.domain = normalizedDomain
+  }
+  for (const [field, limit] of [['city', 100], ['industry', 120], ['address', 250], ['phone', 80]] as [string, number][]) {
+    if (body[field] !== undefined) {
+      body[field] = String(body[field] || '').trim()
+      if (body[field].length > limit) return res.status(400).json({ error: `Поле "${field}" не должно превышать ${limit} символов` })
+    }
+  }
+  if (body.lpr !== undefined) {
+    if (!Array.isArray(body.lpr) || body.lpr.length > 5) return res.status(400).json({ error: 'Можно сохранить не более 5 контактных лиц' })
+    body.lpr = body.lpr.map((person: any) => ({
+      name: String(person?.name || '').trim().slice(0, 120),
+      position: String(person?.position || '').trim().slice(0, 120),
+      evidence: String(person?.evidence || '').trim().slice(0, 1000),
+    })).filter((person: any) => person.name)
+  }
+  if (body.lpr_emails !== undefined) {
+    if (!Array.isArray(body.lpr_emails) || body.lpr_emails.length > 10) return res.status(400).json({ error: 'Можно сохранить не более 10 email-адресов' })
+    body.lpr_emails = [...new Set(body.lpr_emails.map((email: any) => String(email).trim().toLowerCase()))]
+    if (body.lpr_emails.some((email: string) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      return res.status(400).json({ error: 'Проверьте формат email-адресов' })
+    }
+    if (!['website', 'import', 'manual', 'none'].includes(body.email_source)) {
+      body.email_source = body.lpr_emails.length ? 'manual' : 'none'
+    }
+  }
+  if (body.brands !== undefined) {
+    if (!Array.isArray(body.brands) || body.brands.length > 30) return res.status(400).json({ error: 'Можно сохранить не более 30 брендов' })
+    body.brands = [...new Set(body.brands.map((brand: any) => String(brand).trim().slice(0, 100)).filter(Boolean))]
+  }
   if (body.pdf_file !== undefined) {
     if (body.pdf_file === null || body.pdf_file === '') {
       body.pdf_file = null
@@ -92,11 +344,57 @@ app.put('/api/leads/:id', async (req, res) => {
     }
   }
   delete body.id
-  const updated = await db.leads.update(req.params.id, body)
+  let updated = await db.leads.update(req.params.id, body)
   if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+  const scoringFieldsChanged = ['lpr', 'lpr_emails', 'brands', 'business_size', 'wholesale'].some(field => body[field] !== undefined)
+  if (scoringFieldsChanged) {
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const scoring = (await db.settings.get('scoring_config')) || {}
+    const scored = rescoreLead(updated, scoring, getSupplierCatalog(supplier))
+    updated = await db.leads.update(req.params.id, {
+      lead_score: scored.lead_score, lead_tier: scored.lead_tier,
+      matched_brands: scored.matched_brands, matched_skus: scored.matched_skus
+    })
+  }
   res.json(updated)
 })
 
+app.post('/api/leads/:id/generate-kp', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  if (['not_target', 'blacklisted'].includes(lead.status) && !lead.pdf_file) {
+    return res.status(409).json({ error: 'Сначала верните лид в рабочий статус, чтобы сформировать КП' })
+  }
+  let stored = false
+  try {
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const catalog = getSupplierCatalog(supplier)
+    const matched_skus = matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog)
+    const proposalLead = { ...lead, matched_skus, matched_brands: [...new Set(matched_skus.map(item => item.brand))] }
+    const filename = await generateKP(proposalLead, { ...supplier, name: supplier.name || catalog.supplier_name, payment_terms: supplier.payment_terms || catalog.payment_terms, delivery: supplier.delivery || catalog.delivery }, {
+      onKP: async (name, content) => {
+        await db.kp.put(name, lead.id, content)
+        stored = true
+      }
+    })
+    if (!filename || !stored) {
+      return res.status(500).json({ error: 'Не удалось сохранить КП. Проверьте данные поставщика и повторите попытку.' })
+    }
+    const status = ['new', 'in_progress'].includes(lead.status) ? 'proposal_ready' : lead.status
+    const status_history = status !== lead.status
+      ? [...(Array.isArray(lead.status_history) ? lead.status_history : []), { status, date: new Date().toLocaleString('ru-RU') }]
+      : lead.status_history
+    const updated = await db.leads.update(lead.id, {
+      pdf_file: filename, matched_skus, matched_brands: proposalLead.matched_brands,
+      status, status_history
+    })
+    if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+    res.json(updated)
+  } catch (error) {
+    console.error('❌ Ошибка формирования КП:', error)
+    res.status(500).json({ error: 'Ошибка при формировании КП' })
+  }
+})
 app.get('/api/leads/:id/pdf', async (req, res) => {
   const lead = await db.leads.get(req.params.id)
   if (!lead?.pdf_file) return res.status(404).json({ error: 'КП не найдено' })
@@ -105,6 +403,8 @@ app.get('/api/leads/:id/pdf', async (req, res) => {
   const content = await db.kp.get(safeName)
   if (content === null) return res.status(404).json({ error: 'Файл не существует' })
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; img-src data: https:; sandbox")
+  res.setHeader('Cache-Control', 'private, no-store')
   res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(safeName)}"`)
   res.send(content)
 })
@@ -119,11 +419,14 @@ app.delete('/api/leads/:id', async (req, res) => {
 
 app.post('/api/leads/rescore', async (req, res) => {
   const leads = await db.leads.list()
+  const supplier = (await db.settings.get('supplier_config')) || {}
+  const catalog = getSupplierCatalog(supplier)
+  const scoring = (await db.settings.get('scoring_config')) || {}
   let dist: any = { A: 0, B: 0, C: 0 }
   for (const l of leads) {
-    const r = rescoreLead(l)
+    const r = rescoreLead(l, scoring, catalog)
     dist[r.lead_tier] = (dist[r.lead_tier] || 0) + 1
-    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier })
+    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, matched_brands: r.matched_brands, matched_skus: r.matched_skus })
   }
   console.log(`♻️ Пересчитано ${leads.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
   res.json({ rescored: leads.length, distribution: dist })
@@ -136,16 +439,19 @@ app.get('/api/leads/export', async (req, res) => {
     return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const statusText: Record<string, string> = {
-    new: 'Новый', contacted: 'КП отправлено', in_progress: 'В работе',
+    new: 'Новый', in_progress: 'В работе', proposal_ready: 'КП подготовлено', contacted: 'КП отправлено',
     not_target: 'Не целевой', blacklisted: 'Чёрный список', converted: 'Клиент'
   }
-  const header = ['Компания', 'Сайт', 'Город', 'Адрес', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Email', 'Бренды', 'Размер', 'Опт', 'Источник', 'Комментарии']
+  const header = ['Компания', 'Сайт', 'Город', 'Вид деятельности', 'Адрес', 'Телефон', 'Скор', 'Тир', 'Статус', 'ЛПР', 'Должности', 'Источник ЛПР', 'Цитата ЛПР', 'Email компании', 'Источник email', 'Бренды', 'Размер', 'Опт', 'Источник задачи', 'Комментарии']
   const rows = leads.map((l: any) => [
-    l.company_name, l.domain, l.city, l.address || '',
+    l.company_name, l.domain, l.city, l.industry || '', l.address || '', l.phone || '',
     l.lead_score, l.lead_tier, statusText[l.status] || l.status,
     (l.lpr || []).map((p: any) => p.name).join('; '),
     (l.lpr || []).map((p: any) => p.position).join('; '),
+    (l.lpr || []).length === 0 ? 'Не найден' : (l.lpr || []).every((p: any) => p.evidence) ? 'Есть цитата источника' : 'Источник не сохранён; проверить',
+    (l.lpr || []).map((p: any) => p.evidence || '').filter(Boolean).join('; '),
     (l.lpr_emails || []).join('; '),
+    l.email_source === 'website' ? 'Найден на сайте; не привязан к ЛПР' : l.email_source === 'import' ? 'Импортирован; проверить' : l.email_source === 'manual' ? 'Введён вручную' : l.email_source === 'none' ? 'Не найден' : 'Источник неизвестен; проверить',
     (l.brands || []).join('; '),
     l.business_size || '', l.wholesale ? 'да' : 'нет',
     l.search_task_name || 'Ручной импорт',
@@ -163,26 +469,125 @@ app.get('/api/sectors', async (req, res) => {
 })
 
 app.post('/api/sectors', async (req, res) => {
-  const newSector = { ...req.body, id: `sec_${Date.now()}` }
+  const name = String(req.body?.name || '').trim()
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Название сектора должно быть от 2 до 120 символов' })
+  const rawRing = req.body?.polygon?.geometry?.coordinates?.[0]
+  if (!Array.isArray(rawRing) || rawRing.length < 4 || rawRing.length > 500) {
+    return res.status(400).json({ error: 'Для сектора нужна замкнутая область минимум из 3 вершин' })
+  }
+  const ring: [number, number][] = rawRing.map((point: any) => [Number(point?.[0]), Number(point?.[1])])
+  if (ring.some(([lng, lat]) => !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90)) {
+    return res.status(400).json({ error: 'В секторе обнаружены некорректные координаты' })
+  }
+  if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) ring.push([...ring[0]])
+  const area = ring.slice(1).reduce((sum, point, index) => {
+    const previous = ring[index]
+    return sum + previous[0] * point[1] - point[0] * previous[1]
+  }, 0)
+  if (Math.abs(area) < 1e-10) return res.status(400).json({ error: 'Сектор не образует замкнутую область' })
+
+  const managerId = String(req.body?.manager_id || '')
+  if (managerId && !(await db.managers.list()).some((manager: any) => manager.id === managerId)) {
+    return res.status(400).json({ error: 'Выбранный менеджер не найден' })
+  }
+  const color = /^#[0-9a-f]{6}$/i.test(String(req.body?.color || '')) ? String(req.body.color) : '#6366F1'
+  const newSector = {
+    id: `sec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    manager_id: managerId || undefined,
+    color,
+    polygon: {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [ring] },
+      properties: { shape_type: String(req.body?.polygon?.properties?.shape_type || 'polygon') },
+    },
+  }
   await db.sectors.create(newSector)
 
   const leads = await db.leads.list()
+  let assigned = 0
   for (const lead of leads) {
-    if (lead.coordinates && newSector.polygon) {
-      const coords = newSector.polygon.geometry.coordinates[0]
-      const lngs = coords.map((c: any) => c[0])
-      const lats = coords.map((c: any) => c[1])
-      const minLng = Math.min(...lngs), maxLng = Math.max(...lngs)
-      const minLat = Math.min(...lats), maxLat = Math.max(...lats)
-      if (
-        lead.coordinates.lng >= minLng && lead.coordinates.lng <= maxLng &&
-        lead.coordinates.lat >= minLat && lead.coordinates.lat <= maxLat
-      ) {
-        await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
-      }
+    if (hasValidCoordinates(lead.coordinates) && pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), ring)) {
+      await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
+      assigned++
     }
   }
-  res.json(newSector)
+  res.json({ ...newSector, leadsCount: assigned })
+})
+
+app.put('/api/sectors/:id', async (req, res) => {
+  const current = await db.sectors.get(req.params.id)
+  if (!current) return res.status(404).json({ error: 'Сектор не найден' })
+  const name = String(req.body?.name ?? current.name).trim()
+  if (name.length < 2 || name.length > 120) return res.status(400).json({ error: 'Название сектора должно быть от 2 до 120 символов' })
+  const managerId = String(req.body?.manager_id ?? current.manager_id ?? '')
+  if (managerId && !(await db.managers.list()).some((manager: any) => manager.id === managerId)) {
+    return res.status(400).json({ error: 'Выбранный менеджер не найден' })
+  }
+  const color = /^#[0-9a-f]{6}$/i.test(String(req.body?.color || '')) ? String(req.body.color) : current.color || '#6366F1'
+  let polygon = current.polygon
+  if (req.body?.polygon !== undefined) {
+    const rawRing = req.body?.polygon?.geometry?.coordinates?.[0]
+    if (!Array.isArray(rawRing) || rawRing.length < 4 || rawRing.length > 500) {
+      return res.status(400).json({ error: 'Для сектора нужна замкнутая область минимум из 3 вершин' })
+    }
+    const ring: [number, number][] = rawRing.map((point: any) => [Number(point?.[0]), Number(point?.[1])])
+    if (ring.some(([lng, lat]) => !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90)) {
+      return res.status(400).json({ error: 'В секторе обнаружены некорректные координаты' })
+    }
+    if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) ring.push([...ring[0]])
+    const area = ring.slice(1).reduce((sum, point, index) => {
+      const previous = ring[index]
+      return sum + previous[0] * point[1] - point[0] * previous[1]
+    }, 0)
+    if (Math.abs(area) < 1e-10) return res.status(400).json({ error: 'Сектор не образует замкнутую область' })
+    polygon = {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [ring] },
+      properties: { shape_type: String(req.body?.polygon?.properties?.shape_type || 'polygon') },
+    }
+  }
+  const updated = await db.sectors.update(req.params.id, {
+    name,
+    manager_id: managerId || undefined,
+    color,
+    polygon,
+  })
+  if (!updated) return res.status(404).json({ error: 'Сектор не найден' })
+  const leads = await db.leads.list()
+  let assigned = 0
+  for (const lead of leads) {
+    if (!hasValidCoordinates(lead.coordinates)) {
+      if (lead.sector_id === updated.id) await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      continue
+    }
+    const isInside = pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), polygon.geometry.coordinates[0])
+    if (isInside) {
+      await db.leads.update(lead.id, { sector_id: updated.id, assigned_manager_id: updated.manager_id })
+      assigned++
+    } else if (lead.sector_id === updated.id) {
+      await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      await assignLeadToKnownSector({ ...lead, sector_id: undefined, assigned_manager_id: undefined })
+    } else if (lead.sector_id === undefined || lead.sector_id === null) {
+      await assignLeadToKnownSector(lead)
+    }
+  }
+  res.json({ ...updated, leadsCount: assigned })
+})
+
+app.delete('/api/sectors/:id', async (req, res) => {
+  const sector = await db.sectors.get(req.params.id)
+  if (!sector) return res.status(404).json({ error: 'Сектор не найден' })
+  const leads = await db.leads.list()
+  let unassigned = 0
+  for (const lead of leads) {
+    if (lead.sector_id === sector.id) {
+      await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      unassigned++
+    }
+  }
+  await db.sectors.remove(req.params.id)
+  res.json({ success: true, unassigned })
 })
 
 app.get('/api/managers', async (req, res) => {
@@ -197,7 +602,11 @@ app.get('/api/analytics', async (req, res) => {
     total: leads.length,
     new: leads.filter((l: any) => l.status === 'new').length,
     in_progress: leads.filter((l: any) => l.status === 'in_progress').length,
+    proposal_ready: leads.filter((l: any) => l.status === 'proposal_ready').length,
+    contacted: leads.filter((l: any) => l.status === 'contacted').length,
     converted: leads.filter((l: any) => l.status === 'converted').length,
+    not_target: leads.filter((l: any) => l.status === 'not_target').length,
+    blacklisted: leads.filter((l: any) => l.status === 'blacklisted').length,
     managers: managers.map((m: any) => ({
       ...m,
       leadsCount: leads.filter((l: any) => l.assigned_manager_id === m.id).length,
@@ -212,17 +621,45 @@ app.get('/api/analytics', async (req, res) => {
 
 // ---------- settings ----------
 app.get('/api/supplier-config', async (req, res) => {
-  const cfg = await db.settings.get('supplier_config')
-  res.json(cfg?.name ? cfg : { name: 'УралАвтоОпт', contact: 'Петров И.С.' })
+  const profile = (await db.settings.get('supplier_config')) || {}
+  const catalog = getSupplierCatalog(profile)
+  res.json({
+    ...profile,
+    name: profile.name || catalog.supplier_name || 'УралАвтоОпт',
+    contact: profile.contact || '',
+    payment_terms: profile.payment_terms || catalog.payment_terms || '',
+    delivery: profile.delivery || catalog.delivery || '',
+    catalogItems: catalog.items,
+  })
 })
 
 app.put('/api/supplier-config', async (req, res) => {
   const name = String(req.body?.name || '').trim()
-  const contact = String(req.body?.contact || '').trim()
-  if (!name) return res.status(400).json({ error: 'Название поставщика обязательно' })
-  const cfg = { name, contact }
-  await db.settings.set('supplier_config', cfg)
-  res.json(cfg)
+  if (!name) return res.status(400).json({ error: 'Название компании обязательно' })
+  const fields = ['contact', 'email', 'phone', 'website', 'inn', 'address', 'payment_terms', 'delivery', 'warranty', 'offer_validity', 'offer_text']
+  const profile: any = { name }
+  for (const field of fields) profile[field] = String(req.body?.[field] || '').trim().slice(0, 2000)
+  const rawItems = req.body?.catalogItems
+  const items = rawItems === undefined ? getSupplierCatalog((await db.settings.get('supplier_config')) || {}).items : rawItems
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'Предложение должно быть списком товаров' })
+  if (items.length > 1000) return res.status(400).json({ error: 'Максимум 1000 товарных позиций' })
+  const catalogItems: any[] = []
+  for (const [index, item] of items.entries()) {
+    const brand = String(item?.brand || '').trim().slice(0, 100)
+    const productName = String(item?.name || '').trim().slice(0, 200)
+    const price = Number(item?.price)
+    const stock = Number(item?.stock || 0)
+    if (!brand || !productName || !Number.isFinite(price) || price < 0 || !Number.isFinite(stock) || stock < 0) {
+      return res.status(400).json({ error: `Проверьте товарную позицию ${index + 1}: нужны бренд, название и корректная цена/остаток` })
+    }
+    catalogItems.push({
+      brand, name: productName, sku: String(item?.sku || '').trim().slice(0, 100),
+      car: String(item?.car || '').trim().slice(0, 200), price, stock
+    })
+  }
+  profile.catalogItems = catalogItems
+  await db.settings.set('supplier_config', profile)
+  res.json(profile)
 })
 
 app.get('/api/scoring-config', async (req, res) => {
@@ -327,7 +764,12 @@ async function launchPipelineJob(params: {
   const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
   if (running) return null
 
-  const jobId = `job_${Date.now()}`
+  const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const acquired = await db.jobs.acquirePipelineLock(jobId)
+  if (!acquired) return null
+
+  // После получения lease завершаем статусы задач, оставшиеся без активного владельца.
+  await db.jobs.markStaleRunningAsError(jobId).catch((e: any) => console.error('⚠️ Не удалось обновить прерванные задачи:', e))
   const initial = {
     id: jobId,
     status: 'running',
@@ -337,32 +779,52 @@ async function launchPipelineJob(params: {
     added: 0,
     totalFound: 0,
     message: 'Поиск компаний...',
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    search_task_id: source?.search_task_id
   }
   pipelineJobs[jobId] = initial
-  db.jobs.create(initial).catch(() => {})
+  try {
+    await db.jobs.create(initial)
+  } catch (error) {
+    delete pipelineJobs[jobId]
+    await db.jobs.releasePipelineLock(jobId).catch(() => {})
+    console.error('❌ Не удалось сохранить задачу пайплайна:', error)
+    return null
+  }
   console.log(`📥 Запуск поиска: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
 
   const stageText: Record<string, string> = {
     search: 'Поиск компаний...',
-    enrich: 'Анализ сайтов...',
-    kp: 'Генерация КП...',
-    done: 'Готово'
+    enrich: 'Проверка сайтов и оценка лидов...',
+    save: 'Проверка дублей и сохранение...',
+    done: 'Поиск завершён'
   }
 
   ;(async () => {
-    try {
-      const supplierConfig = (await db.settings.get('supplier_config')) || {}
-      const supplierName = supplierConfig?.name || 'УралАвтоОпт'
+    const lockHeartbeat = setInterval(async () => {
+      try {
+        const renewed = await db.jobs.renewPipelineLock(jobId)
+        if (!renewed) console.error(`⚠️ Lease задачи ${jobId} потерян; обновление статуса может быть прервано`)
+      } catch (error) {
+        console.error(`⚠️ Не удалось продлить lease задачи ${jobId}:`, error)
+      }
+    }, 60_000)
 
-      const newLeads = await runPipeline(city, industry, safeLimit, supplierName, (stage, processed, total) => {
-        updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
-      }, {
-        ...options,
-        onKP: async (filename: string, content: string) => {
-          await db.kp.put(filename, null, content).catch((e: any) => console.error('⚠️ KP save:', e))
-        }
-      })
+    try {
+      const supplier = (await db.settings.get('supplier_config')) || {}
+      const supplierCatalog = getSupplierCatalog(supplier)
+      const globalScoring = (await db.settings.get('scoring_config')) || {}
+      const taskScoring = options?.scoring || {}
+      const scoring = {
+        ...globalScoring,
+        ...taskScoring,
+        weights: { ...(globalScoring.weights || {}), ...(taskScoring.weights || {}) },
+        tiers: { ...(globalScoring.tiers || {}), ...(taskScoring.tiers || {}) },
+        businessSizeScores: { ...(globalScoring.businessSizeScores || {}), ...(taskScoring.businessSizeScores || {}) },
+      }
+      const newLeads = await runPipeline(city, industry, safeLimit, '', (stage, processed, total) => {
+        void updateJob(jobId, { stage, processed, total: Math.max(total, 1), message: stageText[stage] || stage })
+      }, { ...options, scoring, supplierCatalog })
 
       if (newLeads.length === 0) {
         await updateJob(jobId, {
@@ -373,34 +835,38 @@ async function launchPipelineJob(params: {
         return
       }
 
-      // Добавление новых лидов (дедуп по домену без учёта www., защита от дублей в прогоне)
-      const rootDomain = (d: string) => String(d || '').toLowerCase().replace(/^www\./, '')
+      // Дедупликация по домену, затем по названию и городу; так учитываются и импортированные записи.
       const existingLeads = await db.leads.list()
-      const existingDomains = new Set(existingLeads.map((l: any) => rootDomain(l.domain)))
+      const knownLeadKeys = new Set(existingLeads.flatMap((lead: any) => getLeadDedupeKeys(lead)))
 
       let addedCount = 0
-      for (const lead of newLeads) {
-        if (!existingDomains.has(rootDomain(lead.domain))) {
-          await db.leads.create({
+      await updateJob(jobId, { stage: 'save', processed: 0, total: newLeads.length, message: stageText.save })
+      for (const [index, lead] of newLeads.entries()) {
+        const dedupeKeys = getLeadDedupeKeys(lead)
+        if (!dedupeKeys.some(key => knownLeadKeys.has(key))) {
+          const savedLead = {
             ...lead,
             ...source,
             id: `lead_${Date.now()}_${addedCount}`,
             status: 'new',
-            pdf_file: (lead as any).pdf_file || null,
+            pdf_file: null,
             comments: [],
             status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
             sector_id: undefined,
             assigned_manager_id: undefined
-          })
-          existingDomains.add(rootDomain(lead.domain))
+          }
+          await db.leads.create(savedLead)
+          await assignLeadToKnownSector(savedLead)
+          dedupeKeys.forEach(key => knownLeadKeys.add(key))
           addedCount++
         }
+        await updateJob(jobId, { stage: 'save', processed: index + 1, total: newLeads.length, message: stageText.save })
       }
 
       const message = addedCount > 0
         ? `Найдено ${newLeads.length}, добавлено ${addedCount} новых лидов`
         : `Найдено ${newLeads.length} компаний, все уже есть в базе`
-      await updateJob(jobId, { status: 'done', added: addedCount, totalFound: newLeads.length, message })
+      await updateJob(jobId, { status: 'done', stage: 'done', processed: newLeads.length, total: newLeads.length, added: addedCount, totalFound: newLeads.length, message })
       console.log(`✅ Job ${jobId}: ${message}`)
       onComplete?.({ status: 'done', found: newLeads.length, added: addedCount })
     } catch (error) {
@@ -408,19 +874,25 @@ async function launchPipelineJob(params: {
       const msg = 'Ошибка при запуске пайплайна: ' + String(error)
       await updateJob(jobId, { status: 'error', error: msg })
       onComplete?.({ status: 'error', found: 0, added: 0, error: msg })
+    } finally {
+      clearInterval(lockHeartbeat)
+      await db.jobs.releasePipelineLock(jobId).catch((e: any) => console.error('⚠️ Не удалось освободить lease:', e))
     }
   })()
 
   return { jobId }
 }
 
+async function respondWithActiveJob(res: any) {
+  const active = await db.jobs.getActive()
+  if (!active) return res.status(503).json({ error: 'Не удалось запустить задачу поиска. Попробуйте ещё раз.' })
+  return res.json({ jobId: active.id, alreadyRunning: true })
+}
+
 app.post('/api/run-pipeline', runCooldown, async (req, res) => {
   const { city = 'Екатеринбург', industry = 'автозапчасти', limit = 5 } = req.body || {}
   const launched = await launchPipelineJob({ city, industry, limit })
-  if (!launched) {
-    const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
-    return res.json({ jobId: (running as any)?.id, alreadyRunning: true })
-  }
+  if (!launched) return respondWithActiveJob(res)
   res.json({ jobId: launched.jobId })
 })
 
@@ -528,10 +1000,7 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
     }
   })
 
-  if (!launched) {
-    const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
-    return res.json({ jobId: (running as any)?.id, alreadyRunning: true })
-  }
+  if (!launched) return respondWithActiveJob(res)
 
   await db.tasks.update(task.id, { status: 'running', last_error: undefined })
   res.json({ jobId: launched.jobId })
@@ -539,6 +1008,7 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
 
 // ---------- boot ----------
 async function main() {
+  assertAuthConfig()
   const mode = await initDb()
   console.log(`💾 Режим хранения: ${mode === 'pg' ? 'PostgreSQL' : 'JSON-файлы (fallback)'}`)
   try {
@@ -550,6 +1020,15 @@ async function main() {
   const stale = await db.jobs.markStaleRunningAsError()
   if (stale) console.log(`⚠️ Прервано рестартом: ${stale} задач пайплайна`)
 
+  const staleJobSweep = setInterval(async () => {
+    try {
+      const recovered = await db.jobs.markStaleRunningAsError()
+      if (recovered) console.log(`⚠️ Помечено прерванными после истечения lease: ${recovered} задач`)
+    } catch (error) {
+      console.error('⚠️ Не удалось проверить зависшие задачи:', error)
+    }
+  }, 60_000)
+
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Сервер запущен на порту ${PORT}`)
   })
@@ -557,6 +1036,18 @@ async function main() {
 
   const shutdown = async () => {
     console.log('🛑 Остановка...')
+    clearInterval(staleJobSweep)
+    const active = Object.values(pipelineJobs).find((job: any) => job.status === 'running') as any
+    if (active) {
+      await updateJob(active.id, { status: 'error', error: 'Сервер остановлен во время выполнения задачи' })
+      if (active.search_task_id) {
+        await db.tasks.update(active.search_task_id, {
+          status: 'error',
+          last_error: 'Сервер остановлен во время выполнения задачи'
+        }).catch(() => {})
+      }
+      await db.jobs.releasePipelineLock(active.id).catch(() => {})
+    }
     await closeDb()
     process.exit(0)
   }
