@@ -754,11 +754,12 @@ export default function App() {
     { label: 'Email найден на сайте', done: selectedLead.email_source === 'website' && (selectedLead.lpr_emails || []).length > 0 },
     { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
     { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
-    { label: 'КП отправлено', done: ['contacted', 'converted'].includes(selectedLead.status) },
+    { label: 'КП отправлено', done: (selectedLead.activities || []).some(activity => activity.outcome === 'proposal_sent') },
   ] : []
 
   const sm = selectedLead ? (STATUS_META[selectedLead.status] || STATUS_META.new) : STATUS_META.new
   const tm = selectedLead ? (TIER_META[selectedLead.lead_tier] || TIER_META.C) : TIER_META.C
+  const sentStatusNeedsReview = Boolean(selectedLead && ['contacted', 'converted'].includes(selectedLead.status) && !(selectedLead.activities || []).some(activity => activity.outcome === 'proposal_sent'))
 
   return (
     <div className="min-h-screen md:flex">
@@ -925,6 +926,7 @@ export default function App() {
               <div className="label">Готовность к отправке</div>
               <div className="card !bg-ink-800/60 px-4 py-3">
                 <ReadinessChecklist items={checklist} />
+                {sentStatusNeedsReview && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-200">Статус показывает отправленное КП, но в истории контактов нет записи об отправке. Проверьте карточку лида и зафиксируйте фактический результат.</div>}
               </div>
             </div>
 
