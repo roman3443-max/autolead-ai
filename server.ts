@@ -4,6 +4,7 @@ import path from 'path'
 import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
 import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
+import { orphanedRunningSearchTasks } from './src/lib/searchTaskRecovery.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -791,6 +792,7 @@ async function launchPipelineJob(params: {
   city: string; industry: string; limit: number
   options?: any
   source?: { search_task_id?: string; search_task_name?: string }
+  onStart?: (jobId: string) => Promise<void> | void
   onComplete?: (result: { status: string; found: number; added: number; error?: string }) => void
 }): Promise<{ jobId: string } | null> {
   const { city, industry, limit, options, source, onComplete } = params
@@ -824,6 +826,17 @@ async function launchPipelineJob(params: {
     delete pipelineJobs[jobId]
     await db.jobs.releasePipelineLock(jobId).catch(() => {})
     console.error('❌ Не удалось сохранить задачу пайплайна:', error)
+    return null
+  }
+
+  try {
+    await params.onStart?.(jobId)
+  } catch (error) {
+    const message = 'Не удалось обновить статус задачи поиска перед запуском'
+    await updateJob(jobId, { status: 'error', error: message })
+    delete pipelineJobs[jobId]
+    await db.jobs.releasePipelineLock(jobId).catch(() => {})
+    console.error('❌ Не удалось подготовить задачу поиска:', error)
     return null
   }
   console.log(`📥 Запуск поиска: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
@@ -922,6 +935,20 @@ async function respondWithActiveJob(res: any) {
   const active = await db.jobs.getActive()
   if (!active) return res.status(503).json({ error: 'Не удалось запустить задачу поиска. Попробуйте ещё раз.' })
   return res.json({ jobId: active.id, alreadyRunning: true })
+}
+
+async function recoverOrphanedRunningSearchTasks(): Promise<number> {
+  const activeJob = await db.jobs.getActive()
+  const tasks = await db.tasks.list()
+  const orphaned = orphanedRunningSearchTasks(tasks, activeJob)
+  for (const task of orphaned) {
+    await db.tasks.update(task.id, {
+      status: 'error',
+      last_error: 'Поиск прерван: активный процесс не найден. Запустите задачу повторно.',
+      active_job_id: undefined,
+    })
+  }
+  return orphaned.length
 }
 
 app.post('/api/run-pipeline', runCooldown, async (req, res) => {
@@ -1024,20 +1051,28 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
       useGeocode: task.use_geocode !== false
     },
     source: { search_task_id: task.id, search_task_name: task.name },
+    onStart: async (jobId) => {
+      const updated = await db.tasks.update(task.id, {
+        status: 'running',
+        started_at: new Date().toISOString(),
+        active_job_id: jobId,
+        last_error: undefined,
+      })
+      if (!updated) throw new Error('Задача поиска не найдена')
+    },
     onComplete: async (result) => {
       await db.tasks.update(task.id, {
         status: result.status === 'done' ? 'done' : 'error',
         last_run: new Date().toISOString(),
         leads_found: result.found,
         leads_added: result.added,
-        last_error: result.error
+        last_error: result.error,
+        active_job_id: undefined,
       }).catch(() => {})
     }
   })
 
   if (!launched) return respondWithActiveJob(res)
-
-  await db.tasks.update(task.id, { status: 'running', last_error: undefined })
   res.json({ jobId: launched.jobId })
 })
 
@@ -1054,11 +1089,15 @@ async function main() {
   // Джобы, прерванные рестартом, помечаем ошибкой
   const stale = await db.jobs.markStaleRunningAsError()
   if (stale) console.log(`⚠️ Прервано рестартом: ${stale} задач пайплайна`)
+  const orphanedTasks = await recoverOrphanedRunningSearchTasks()
+  if (orphanedTasks) console.log(`⚠️ Снято зависших статусов поиска: ${orphanedTasks}`)
 
   const staleJobSweep = setInterval(async () => {
     try {
       const recovered = await db.jobs.markStaleRunningAsError()
       if (recovered) console.log(`⚠️ Помечено прерванными после истечения lease: ${recovered} задач`)
+      const orphaned = await recoverOrphanedRunningSearchTasks()
+      if (orphaned) console.log(`⚠️ Снято зависших статусов поиска: ${orphaned}`)
     } catch (error) {
       console.error('⚠️ Не удалось проверить зависшие задачи:', error)
     }
