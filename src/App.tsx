@@ -129,7 +129,8 @@ export default function App() {
   const [leadEditDraft, setLeadEditDraft] = useState<any>(null)
   const [leadSaveBusy, setLeadSaveBusy] = useState(false)
   const [newComment, setNewComment] = useState('')
-  const [followUpDraft, setFollowUpDraft] = useState({ date: '', note: '' })
+  const [followUpDraft, setFollowUpDraft] = useState({ date: '', note: '', outcome: '' })
+  const [proposalSelection, setProposalSelection] = useState<Record<string, number>>({})
   const [followUpBusy, setFollowUpBusy] = useState(false)
 
   const [supplier, setSupplier] = useState<any>(() => {
@@ -333,9 +334,8 @@ export default function App() {
   const openSettings = () => {
     const d = scoringCfg || {}
     setSettingsDraft({
-      weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15, ...(d.weights || {}) },
+      weights: { lpr: 25, emails: 15, brands: 35, businessSize: 15, wholesale: 10, ...(d.weights || {}), content: 0 },
       tiers: { a: 75, b: 50, ...(d.tiers || {}) },
-      retailPenalty: typeof d.retailPenalty === 'number' ? d.retailPenalty : 15,
       city: d.searchDefaults?.city || 'Екатеринбург',
       industry: d.searchDefaults?.industry || 'автозапчасти',
       limit: d.searchDefaults?.limit || 5,
@@ -350,7 +350,6 @@ export default function App() {
         body: JSON.stringify({
           weights: settingsDraft.weights,
           tiers: settingsDraft.tiers,
-          retailPenalty: settingsDraft.retailPenalty,
           searchDefaults: { city: settingsDraft.city, industry: settingsDraft.industry, limit: settingsDraft.limit },
         })
       })
@@ -376,6 +375,10 @@ export default function App() {
   // ---------- лиды ----------
   const handleStatusChange = async (leadId: string, newStatus: string) => {
     const lead = leads.find(l => l.id === leadId)
+    if (newStatus === 'contacted' && lead?.status !== 'contacted') {
+      toast('Отметьте фактическую отправку КП через «Результат контакта» в карточке', 'info')
+      return
+    }
     const status_history = [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
     try {
       const res = await apiFetch(`${API_URL}/api/leads/${leadId}`, {
@@ -392,12 +395,18 @@ export default function App() {
   const handleOpenLead = (lead: Lead) => {
     setLeadEditMode(false)
     setLeadEditDraft(null)
-    setFollowUpDraft({ date: toLocalDateTimeInput(lead.next_contact_at), note: '' })
+    setFollowUpDraft({ date: toLocalDateTimeInput(lead.next_contact_at), note: '', outcome: '' })
+    setProposalSelection({})
     setSelectedLead(lead)
   }
 
   const handleSaveFollowUp = async () => {
     if (!selectedLead) return
+    const dateChanged = followUpDraft.date !== toLocalDateTimeInput(selectedLead.next_contact_at)
+    if (!followUpDraft.outcome && !followUpDraft.note.trim() && !dateChanged) {
+      toast('Добавьте результат, заметку или измените дату контакта', 'info')
+      return
+    }
     let next_contact_at: string | null = null
     if (followUpDraft.date) {
       const parsed = new Date(followUpDraft.date)
@@ -408,14 +417,14 @@ export default function App() {
     try {
       const res = await apiFetch(`${API_URL}/api/leads/${selectedLead.id}/follow-up`, {
         method: 'POST',
-        body: JSON.stringify({ next_contact_at, note: followUpDraft.note })
+        body: JSON.stringify({ next_contact_at, note: followUpDraft.note, outcome: followUpDraft.outcome })
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { toast(data.error || 'Не удалось сохранить контакт', 'error'); return }
       setSelectedLead(data)
-      setFollowUpDraft({ date: toLocalDateTimeInput(data.next_contact_at), note: '' })
+      setFollowUpDraft({ date: toLocalDateTimeInput(data.next_contact_at), note: '', outcome: '' })
       loadData()
-      toast('Следующий контакт и заметка сохранены', 'success')
+      toast(followUpDraft.outcome === 'proposal_sent' ? 'Отправка КП зафиксирована; этап обновлён.' : 'Результат, заметка и напоминание сохранены.', 'success')
     } catch { toast('Ошибка соединения с сервером', 'error') }
     finally { setFollowUpBusy(false) }
   }
@@ -514,9 +523,15 @@ export default function App() {
   }
 
   const handleGenerateKP = async (lead: Lead) => {
+    const items = (lead.matched_skus || []).filter(item => (proposalSelection[item.sku || `${item.brand}|${item.name}`] || 0) > 0)
+      .map(item => ({ sku: item.sku, brand: item.brand, name: item.name, quantity: proposalSelection[item.sku || `${item.brand}|${item.name}`] }))
+    if ((lead.matched_skus || []).length > 0 && items.length === 0) {
+      toast('Выберите хотя бы одну позицию для КП', 'info')
+      return
+    }
     setKpGeneratingId(lead.id)
     try {
-      const res = await apiFetch(`${API_URL}/api/leads/${lead.id}/generate-kp`, { method: 'POST' })
+      const res = await apiFetch(`${API_URL}/api/leads/${lead.id}/generate-kp`, { method: 'POST', body: JSON.stringify({ items }) })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { toast(data.error || 'Не удалось сформировать КП', 'error'); return }
       setLeads(prev => prev.map(item => item.id === lead.id ? data : item))
@@ -728,7 +743,7 @@ export default function App() {
     { label: 'Email найден на сайте', done: selectedLead.email_source === 'website' && (selectedLead.lpr_emails || []).length > 0 },
     { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
     { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
-    { label: 'КП отправлено', done: ['contacted', 'in_progress', 'converted'].includes(selectedLead.status) },
+    { label: 'КП отправлено', done: ['contacted', 'converted'].includes(selectedLead.status) },
   ] : []
 
   const sm = selectedLead ? (STATUS_META[selectedLead.status] || STATUS_META.new) : STATUS_META.new
@@ -768,7 +783,7 @@ export default function App() {
             scoringCfg={scoringCfg}
             onNewTask={() => setTaskForm(newTaskDefaults())}
             onRunTask={handleRunTask}
-            onEditTask={(t) => setTaskForm({ ...t, scoring: t.scoring || null })}
+            onEditTask={(t) => setTaskForm({ ...t, scoring: t.scoring ? { ...t.scoring, weights: { ...t.scoring.weights, brands: Number(t.scoring.weights.brands || 0) + Number(t.scoring.weights.content || 0), content: 0 } } : null })}
             onDeleteTask={handleDeleteTask}
             onGoLeads={() => setActiveTab('table')}
             onOpenSettings={openSettings}
@@ -863,7 +878,7 @@ export default function App() {
                   onChange={e => handleStatusChange(selectedLead.id, e.target.value)}
                   className={`input !w-auto !py-1.5 !px-2.5 text-[12px] font-semibold !bg-ink-800 ${sm.color}`}
                 >
-                  {Object.entries(STATUS_META).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
+                  {Object.entries(STATUS_META).map(([id, m]) => <option key={id} value={id} disabled={id === 'contacted' && selectedLead.status !== 'contacted'}>{m.label}</option>)}
                 </select>
               </div>
               <div>
@@ -884,6 +899,16 @@ export default function App() {
                 <div className="text-[13px] text-slate-300 leading-relaxed">{selectedLead.reason}</div>
               </div>
             )}
+
+            <div className="card !bg-ink-800/50 p-4 space-y-2">
+              <div className="font-semibold text-sm text-slate-100">Из чего сложился скор {selectedLead.lead_score}/100</div>
+              {selectedLead.score_breakdown?.factors?.length ? selectedLead.score_breakdown.factors.map(factor => (
+                <div key={factor.key} className="flex items-start justify-between gap-4 border-t border-line/70 pt-2 first:border-0 first:pt-0">
+                  <div><div className="text-[13px] text-slate-200">{factor.label}</div><div className="text-[11px] text-slate-500">{factor.detail}</div></div>
+                  <span className={`text-sm font-bold tabular-nums ${factor.points < 0 ? 'text-rose-300' : factor.points > 0 ? 'text-emerald-300' : 'text-slate-500'}`}>{factor.points > 0 ? '+' : ''}{factor.points}</span>
+                </div>
+              )) : <div className="text-xs text-slate-500">Это скор старого расчёта. Нажмите «Пересчитать лидов» в настройках, чтобы применить новые правила и показать детали.</div>}
+            </div>
 
             <div>
               <div className="label">Готовность к отправке</div>
@@ -957,6 +982,24 @@ export default function App() {
               <div className="text-[13px] text-slate-300">
                 {selectedLead.matched_brands?.length ? selectedLead.matched_brands.join(', ') : 'Совпавших брендов нет — брендовая часть скоринга не начислена.'}
               </div>
+              {(selectedLead.matched_skus || []).length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <div className="label">Выберите позиции для КП</div>
+                  {(selectedLead.matched_skus || []).map((item, index) => {
+                    const key = item.sku || `${item.brand}|${item.name}`
+                    const quantity = proposalSelection[key] || 0
+                    return <div key={`${key}-${index}`} className="flex items-center gap-2 rounded-lg border border-line bg-ink-800/60 p-2.5">
+                      <input type="checkbox" checked={quantity > 0} aria-label={`Добавить ${item.name} в КП`} onChange={e => setProposalSelection(prev => ({ ...prev, [key]: e.target.checked ? 1 : 0 }))} />
+                      <div className="min-w-0 flex-1"><div className="text-xs font-medium text-slate-200">{item.brand} · {item.name}</div><div className="text-[11px] text-slate-500">{item.sku || 'Без артикула'} · {Number(item.price).toLocaleString('ru-RU')} ₽ · остаток {item.stock || 0}</div></div>
+                      <input type="number" min={1} max={Number(item.stock) > 0 ? Number(item.stock) : 9999} disabled={!quantity} value={quantity || 1} onChange={e => setProposalSelection(prev => ({ ...prev, [key]: Math.max(1, Math.min(Number(item.stock) > 0 ? Number(item.stock) : 9999, Number(e.target.value) || 1)) }))} className="input !w-20 !px-2 !py-1.5 text-xs" aria-label={`Количество ${item.name}`} />
+                    </div>
+                  })}
+                  <div className="text-right text-sm font-semibold text-slate-200">Итого по выбранным позициям: {(selectedLead.matched_skus || []).reduce((sum, item, index) => sum + Number(item.price || 0) * (proposalSelection[item.sku || `${item.brand}|${item.name}`] || 0), 0).toLocaleString('ru-RU')} ₽</div>
+                </div>
+              )}
+              {selectedLead.proposal_total !== undefined && (
+                <div className="mt-2 text-xs text-emerald-300">Последнее КП: {Number(selectedLead.proposal_total).toLocaleString('ru-RU')} ₽ · {selectedLead.proposal_created_at ? new Date(selectedLead.proposal_created_at).toLocaleString('ru-RU') : 'дата не сохранена'}</div>
+              )}
             </div>
 
             <div className="card !bg-ink-800/50 p-4 space-y-3">
@@ -982,6 +1025,18 @@ export default function App() {
                 <p className="text-xs text-slate-500">Оставьте дату пустой, чтобы снять напоминание.</p>
               </div>
               <div>
+                <label className="label">Результат контакта</label>
+                <select value={followUpDraft.outcome} onChange={e => setFollowUpDraft({ ...followUpDraft, outcome: e.target.value })} className="input">
+                  <option value="">Не фиксировать результат</option>
+                  <option value="reached">Связались, уточняем потребность</option>
+                  <option value="no_answer">Не ответили</option>
+                  <option value="requested_quote">Запросили предложение</option>
+                  <option value="proposal_sent">КП фактически отправлено</option>
+                  <option value="not_interested">Не заинтересованы</option>
+                  <option value="wrong_contact">Неверный контакт</option>
+                </select>
+              </div>
+              <div>
                 <label className="label">Заметка / следующий шаг</label>
                 <textarea
                   value={followUpDraft.note}
@@ -992,7 +1047,7 @@ export default function App() {
                 />
               </div>
               <div className="flex justify-end">
-                <button onClick={() => void handleSaveFollowUp()} disabled={followUpBusy} className="btn-primary">
+                <button onClick={() => void handleSaveFollowUp()} disabled={followUpBusy || (!followUpDraft.outcome && !followUpDraft.note.trim() && followUpDraft.date === toLocalDateTimeInput(selectedLead.next_contact_at))} className="btn-primary">
                   {followUpBusy ? 'Сохраняю…' : 'Сохранить контакт'}
                 </button>
               </div>
@@ -1003,6 +1058,7 @@ export default function App() {
                   {(selectedLead.activities || []).map(activity => (
                     <div key={activity.id} className="card !bg-ink-900/70 px-3.5 py-2.5">
                       <div className="text-[11px] text-slate-500">{new Date(activity.created_at).toLocaleString('ru-RU')}</div>
+                      {activity.outcome && <div className="text-[11px] text-indigo-300 mt-1">{({ reached: 'Связались', no_answer: 'Не ответили', requested_quote: 'Запросили КП', proposal_sent: 'КП отправлено', not_interested: 'Нет интереса', wrong_contact: 'Неверный контакт' } as Record<string, string>)[activity.outcome] || activity.outcome}</div>}
                       <div className="text-[13px] text-slate-300 mt-1 whitespace-pre-wrap">{activity.note}</div>
                       {activity.next_contact_at && <div className="text-[11px] text-indigo-300 mt-1">Контакт: {new Date(activity.next_contact_at).toLocaleString('ru-RU')}</div>}
                     </div>
@@ -1107,12 +1163,12 @@ export default function App() {
                 <input
                   type="checkbox"
                   checked={taskForm.scoring !== null}
-                  onChange={e => setTaskForm({ ...taskForm, scoring: e.target.checked ? { weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 } } : null })}
+                onChange={e => setTaskForm({ ...taskForm, scoring: e.target.checked ? { weights: { lpr: 25, emails: 15, brands: 35, businessSize: 15, wholesale: 10, content: 0 } } : null })}
                 />
                 Индивидуальные веса скоринга (иначе — глобальный конфиг)
               </label>
               {taskForm.scoring && (
-                <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-3 card !bg-ink-800/60 p-4">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-3 card !bg-ink-800/60 p-4">
                   {SCORING_FIELDS.map(([key, label]) => (
                     <div key={key}>
                       <label className="label !mb-1">{label}</label>
@@ -1162,7 +1218,7 @@ export default function App() {
 
             <div>
               <div className="label">Веса скоринга (сумма 100)</div>
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 {SCORING_FIELDS.map(([key, label]) => (
                   <div key={key}>
                     <label className="label !mb-1">{label}</label>
@@ -1177,11 +1233,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="label !mb-1">Штраф за розницу</label>
-                <input type="number" min={0} max={100} value={settingsDraft.retailPenalty} onChange={e => setSettingsDraft({ ...settingsDraft, retailPenalty: Math.max(0, parseInt(e.target.value) || 0) })} className="input !px-2.5 !py-1.5 text-[13px]" />
-              </div>
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label !mb-1">Tier A (≥)</label>
                 <input type="number" min={0} max={100} value={settingsDraft.tiers.a} onChange={e => setSettingsDraft({ ...settingsDraft, tiers: { ...settingsDraft.tiers, a: Math.max(0, parseInt(e.target.value) || 0) } })} className="input !px-2.5 !py-1.5 text-[13px]" />
