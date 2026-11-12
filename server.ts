@@ -217,7 +217,8 @@ app.post('/api/leads/import', async (req, res) => {
       const city = String(raw?.city || '').trim().slice(0, 100)
       const industry = String(raw?.industry || '').trim().slice(0, 120)
       const rawEmails = Array.isArray(raw?.lpr_emails) ? raw.lpr_emails : String(raw?.email || '').split(/[;,|]/)
-      const lpr_emails = [...new Set(rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
+      const rawEmailValues = rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter(Boolean)
+      const lpr_emails = [...new Set(rawEmailValues.filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
       const rawLpr = Array.isArray(raw?.lpr) ? raw.lpr : (raw?.lpr_name ? [{ name: raw.lpr_name, position: raw.lpr_position || '' }] : [])
       const lpr = rawLpr.slice(0, 5).map((person: any) => ({ name: String(person?.name || '').trim(), position: String(person?.position || '').trim(), evidence: '' })).filter((person: any) => person.name)
       const rawBrands = Array.isArray(raw?.brands) ? raw.brands : String(raw?.brands || '').split(/[;,|]/)
@@ -240,9 +241,10 @@ app.post('/api/leads/import', async (req, res) => {
       if (!industry) qualityWarnings.push('не указан вид деятельности')
       if (!domain) qualityWarnings.push('не указан сайт')
       if (!phone && !lpr_emails.length) qualityWarnings.push('нет телефона и email')
+      if (rawEmailValues.length > lpr_emails.length) qualityWarnings.push('есть email в неверном формате')
       if (!lpr.length) qualityWarnings.push('не указано контактное лицо')
       if (!brands.length) qualityWarnings.push('не указаны бренды')
-      if (!hasCoordinates) qualityWarnings.push('нет координат для карты')
+      if (!hasCoordinates) qualityWarnings.push(String(raw?.lat ?? '').trim() || String(raw?.lng ?? '').trim() ? 'координаты некорректны' : 'нет координат для карты')
       const keys = getLeadDedupeKeys(lead)
       if (keys.some(key => knownKeys.has(key))) {
         duplicates++
