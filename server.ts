@@ -205,6 +205,7 @@ app.post('/api/leads/import', async (req, res) => {
     let imported = 0
     let importable = 0
     let duplicates = 0
+    let needsReview = 0
 
     for (const [index, raw] of rows.entries()) {
       const company_name = String(raw?.company_name || '').trim().slice(0, 200)
@@ -234,6 +235,14 @@ app.post('/api/leads/import', async (req, res) => {
         status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
         source_type: 'import', source_name: sourceName, search_task_name: `Импорт: ${sourceName}`,
       }
+      const qualityWarnings: string[] = []
+      if (!city) qualityWarnings.push('не указан город')
+      if (!industry) qualityWarnings.push('не указан вид деятельности')
+      if (!domain) qualityWarnings.push('не указан сайт')
+      if (!phone && !lpr_emails.length) qualityWarnings.push('нет телефона и email')
+      if (!lpr.length) qualityWarnings.push('не указано контактное лицо')
+      if (!brands.length) qualityWarnings.push('не указаны бренды')
+      if (!hasCoordinates) qualityWarnings.push('нет координат для карты')
       const keys = getLeadDedupeKeys(lead)
       if (keys.some(key => knownKeys.has(key))) {
         duplicates++
@@ -243,7 +252,8 @@ app.post('/api/leads/import', async (req, res) => {
       }
       const scored = rescoreLead(lead, scoring, catalog)
       importable++
-      if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier })
+      if (qualityWarnings.length) needsReview++
+      if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier, qualityWarnings })
       if (!dryRun) {
         const id = `lead_import_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`
         const importedLead = { ...scored, id }
@@ -253,7 +263,7 @@ app.post('/api/leads/import', async (req, res) => {
       }
       keys.forEach(key => knownKeys.add(key))
     }
-    res.json({ dryRun, total: rows.length, importable, imported, duplicates, invalid: invalidRows.length, newPreview, duplicatePreview, invalidRows })
+    res.json({ dryRun, total: rows.length, importable, imported, duplicates, invalid: invalidRows.length, needsReview, newPreview, duplicatePreview, invalidRows })
   } catch (error) {
     console.error('❌ Ошибка импорта лидов:', error)
     res.status(500).json({ error: 'Не удалось обработать файл импорта' })
