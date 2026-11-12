@@ -276,26 +276,41 @@ app.post('/api/leads/:id/follow-up', async (req, res) => {
   }
   const note = String(body.note || '').trim()
   if (note.length > 2000) return res.status(400).json({ error: 'Заметка не должна превышать 2000 символов' })
-  if (body.next_contact_at === undefined && !note) return res.status(400).json({ error: 'Укажите дату контакта или добавьте заметку' })
+  const allowedOutcomes = ['reached', 'no_answer', 'requested_quote', 'proposal_sent', 'not_interested', 'wrong_contact']
+  const outcome = String(body.outcome || '')
+  if (outcome && !allowedOutcomes.includes(outcome)) return res.status(400).json({ error: 'Неизвестный результат контакта' })
+  if (outcome === 'proposal_sent' && !lead.pdf_file) return res.status(409).json({ error: 'Сначала сформируйте КП, затем отметьте его отправку' })
+  if (body.next_contact_at === undefined && !note && !outcome) return res.status(400).json({ error: 'Укажите результат контакта, дату или заметку' })
 
   const activities = Array.isArray(lead.activities) ? [...lead.activities] : []
-  if (note || scheduleChanged) {
+  if (note || scheduleChanged || outcome) {
     activities.unshift({
       id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       created_at: new Date().toISOString(),
-      note: note || (nextContactAt ? 'Назначен следующий контакт' : 'Дата следующего контакта снята'),
+      note: note || (outcome ? 'Результат контакта зафиксирован' : nextContactAt ? 'Назначен следующий контакт' : 'Дата следующего контакта снята'),
+      outcome: outcome || undefined,
       next_contact_at: nextContactAt,
     })
   }
+  const status = outcome === 'proposal_sent' ? 'contacted' : lead.status
+  const status_history = status !== lead.status
+    ? [...(Array.isArray(lead.status_history) ? lead.status_history : []), { status, date: new Date().toLocaleString('ru-RU') }]
+    : lead.status_history
   const updated = await db.leads.update(lead.id, {
     next_contact_at: nextContactAt,
     activities: activities.slice(0, 100),
+    status,
+    status_history,
   })
   res.json(updated)
 })
 
 app.put('/api/leads/:id', async (req, res) => {
   const body: any = { ...req.body }
+  if (body.status === 'contacted') {
+    const current = await db.leads.get(req.params.id)
+    if (current && current.status !== 'contacted') return res.status(409).json({ error: 'Зафиксируйте фактическую отправку КП в блоке «Результат контакта»' })
+  }
   if (body.company_name !== undefined) {
     body.company_name = String(body.company_name || '').trim()
     if (body.company_name.length < 2 || body.company_name.length > 200) {
@@ -353,7 +368,8 @@ app.put('/api/leads/:id', async (req, res) => {
     const scored = rescoreLead(updated, scoring, getSupplierCatalog(supplier))
     updated = await db.leads.update(req.params.id, {
       lead_score: scored.lead_score, lead_tier: scored.lead_tier,
-      matched_brands: scored.matched_brands, matched_skus: scored.matched_skus
+      matched_brands: scored.matched_brands, matched_skus: scored.matched_skus,
+      score_breakdown: scored.score_breakdown
     })
   }
   res.json(updated)
@@ -370,7 +386,23 @@ app.post('/api/leads/:id/generate-kp', async (req, res) => {
     const supplier = (await db.settings.get('supplier_config')) || {}
     const catalog = getSupplierCatalog(supplier)
     const matched_skus = matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog)
-    const proposalLead = { ...lead, matched_skus, matched_brands: [...new Set(matched_skus.map(item => item.brand))] }
+    const requestedItems = req.body?.items
+    if (requestedItems !== undefined && (!Array.isArray(requestedItems) || requestedItems.length > 10)) {
+      return res.status(400).json({ error: 'Выберите не более 10 позиций для одного КП' })
+    }
+    const proposal_items: any[] = requestedItems === undefined
+      ? matched_skus.map(item => ({ ...item, quantity: 1 }))
+      : requestedItems.map((requested: any) => {
+          const product = matched_skus.find(item => requested?.sku
+            ? item.sku === String(requested.sku)
+            : item.brand === String(requested?.brand || '') && item.name === String(requested?.name || ''))
+          const quantity = Number(requested?.quantity)
+          if (!product || !Number.isInteger(quantity) || quantity < 1 || quantity > 9999 || (Number(product.stock) > 0 && quantity > Number(product.stock))) return null
+          return { ...product, quantity }
+        })
+    if (proposal_items.some((item: any) => !item)) return res.status(400).json({ error: 'Проверьте выбранные позиции, количество и остатки в каталоге. Обновите карточку и повторите.' })
+    const proposal_total = proposal_items.reduce((sum: number, item: any) => sum + Number(item.price || 0) * item.quantity, 0)
+    const proposalLead = { ...lead, proposal_items, matched_skus, matched_brands: [...new Set(proposal_items.map((item: any) => item.brand))] }
     const filename = await generateKP(proposalLead, { ...supplier, name: supplier.name || catalog.supplier_name, payment_terms: supplier.payment_terms || catalog.payment_terms, delivery: supplier.delivery || catalog.delivery }, {
       onKP: async (name, content) => {
         await db.kp.put(name, lead.id, content)
@@ -385,7 +417,7 @@ app.post('/api/leads/:id/generate-kp', async (req, res) => {
       ? [...(Array.isArray(lead.status_history) ? lead.status_history : []), { status, date: new Date().toLocaleString('ru-RU') }]
       : lead.status_history
     const updated = await db.leads.update(lead.id, {
-      pdf_file: filename, matched_skus, matched_brands: proposalLead.matched_brands,
+      pdf_file: filename, matched_skus, proposal_items, proposal_total, proposal_created_at: new Date().toISOString(), matched_brands: proposalLead.matched_brands,
       status, status_history
     })
     if (!updated) return res.status(404).json({ error: 'Лид не найден' })
@@ -426,7 +458,7 @@ app.post('/api/leads/rescore', async (req, res) => {
   for (const l of leads) {
     const r = rescoreLead(l, scoring, catalog)
     dist[r.lead_tier] = (dist[r.lead_tier] || 0) + 1
-    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, matched_brands: r.matched_brands, matched_skus: r.matched_skus })
+    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, matched_brands: r.matched_brands, matched_skus: r.matched_skus, score_breakdown: r.score_breakdown })
   }
   console.log(`♻️ Пересчитано ${leads.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
   res.json({ rescored: leads.length, distribution: dist })
@@ -664,8 +696,11 @@ app.put('/api/supplier-config', async (req, res) => {
 
 app.get('/api/scoring-config', async (req, res) => {
   const cfg = (await db.settings.get('scoring_config')) || {}
+  const weights = { lpr: 25, emails: 15, brands: 35, businessSize: 15, wholesale: 10, ...(cfg?.weights || {}) }
+  weights.brands = Math.min(100, Number(weights.brands || 0) + Number((cfg?.weights || {}).content || 0))
+  ;(weights as any).content = 0
   res.json({
-    weights: cfg?.weights || { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
+    weights,
     tiers: cfg?.tiers || { a: 75, b: 50 },
     retailPenalty: typeof cfg?.retailPenalty === 'number' ? cfg.retailPenalty : 15,
     searchDefaults: loadSearchDefaults()
