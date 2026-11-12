@@ -4,6 +4,7 @@ import path from 'path'
 import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
 import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
+import { orphanedRunningSearchTasks } from './src/lib/searchTaskRecovery.ts'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -204,6 +205,7 @@ app.post('/api/leads/import', async (req, res) => {
     let imported = 0
     let importable = 0
     let duplicates = 0
+    let needsReview = 0
 
     for (const [index, raw] of rows.entries()) {
       const company_name = String(raw?.company_name || '').trim().slice(0, 200)
@@ -214,8 +216,10 @@ app.post('/api/leads/import', async (req, res) => {
       const domain = normalizeLeadDomain(raw?.domain || raw?.website)
       const city = String(raw?.city || '').trim().slice(0, 100)
       const industry = String(raw?.industry || '').trim().slice(0, 120)
+      const phone = String(raw?.phone || '').trim().slice(0, 80)
       const rawEmails = Array.isArray(raw?.lpr_emails) ? raw.lpr_emails : String(raw?.email || '').split(/[;,|]/)
-      const lpr_emails = [...new Set(rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
+      const rawEmailValues = rawEmails.map((email: any) => String(email).trim().toLowerCase()).filter(Boolean)
+      const lpr_emails = [...new Set(rawEmailValues.filter((email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))].slice(0, 10)
       const rawLpr = Array.isArray(raw?.lpr) ? raw.lpr : (raw?.lpr_name ? [{ name: raw.lpr_name, position: raw.lpr_position || '' }] : [])
       const lpr = rawLpr.slice(0, 5).map((person: any) => ({ name: String(person?.name || '').trim(), position: String(person?.position || '').trim(), evidence: '' })).filter((person: any) => person.name)
       const rawBrands = Array.isArray(raw?.brands) ? raw.brands : String(raw?.brands || '').split(/[;,|]/)
@@ -224,7 +228,7 @@ app.post('/api/leads/import', async (req, res) => {
       const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
       const lead: any = {
         company_name, domain, city, industry, address: String(raw?.address || '').trim().slice(0, 250),
-        phone: String(raw?.phone || '').trim().slice(0, 80),
+        phone,
         coordinates: hasCoordinates ? { lat, lng } : undefined,
         coordinate_source: hasCoordinates ? 'import' : undefined,
         lpr, lpr_emails, email_source: lpr_emails.length ? 'import' : 'none', brands,
@@ -233,6 +237,15 @@ app.post('/api/leads/import', async (req, res) => {
         status_history: [{ status: 'new', date: new Date().toLocaleString('ru-RU') }],
         source_type: 'import', source_name: sourceName, search_task_name: `Импорт: ${sourceName}`,
       }
+      const qualityWarnings: string[] = []
+      if (!city) qualityWarnings.push('не указан город')
+      if (!industry) qualityWarnings.push('не указан вид деятельности')
+      if (!domain) qualityWarnings.push('не указан сайт')
+      if (!phone && !lpr_emails.length) qualityWarnings.push('нет телефона и email')
+      if (rawEmailValues.length > lpr_emails.length) qualityWarnings.push('есть email в неверном формате')
+      if (!lpr.length) qualityWarnings.push('не указано контактное лицо')
+      if (!brands.length) qualityWarnings.push('не указаны бренды')
+      if (!hasCoordinates) qualityWarnings.push(String(raw?.lat ?? '').trim() || String(raw?.lng ?? '').trim() ? 'координаты некорректны' : 'нет координат для карты')
       const keys = getLeadDedupeKeys(lead)
       if (keys.some(key => knownKeys.has(key))) {
         duplicates++
@@ -242,7 +255,8 @@ app.post('/api/leads/import', async (req, res) => {
       }
       const scored = rescoreLead(lead, scoring, catalog)
       importable++
-      if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier })
+      if (qualityWarnings.length) needsReview++
+      if (newPreview.length < 20) newPreview.push({ row: index + 1, company_name, domain, city, industry, lead_score: scored.lead_score, lead_tier: scored.lead_tier, qualityWarnings })
       if (!dryRun) {
         const id = `lead_import_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`
         const importedLead = { ...scored, id }
@@ -252,7 +266,7 @@ app.post('/api/leads/import', async (req, res) => {
       }
       keys.forEach(key => knownKeys.add(key))
     }
-    res.json({ dryRun, total: rows.length, importable, imported, duplicates, invalid: invalidRows.length, newPreview, duplicatePreview, invalidRows })
+    res.json({ dryRun, total: rows.length, importable, imported, duplicates, invalid: invalidRows.length, needsReview, newPreview, duplicatePreview, invalidRows })
   } catch (error) {
     console.error('❌ Ошибка импорта лидов:', error)
     res.status(500).json({ error: 'Не удалось обработать файл импорта' })
@@ -401,6 +415,9 @@ app.post('/api/leads/:id/generate-kp', async (req, res) => {
           return { ...product, quantity }
         })
     if (proposal_items.some((item: any) => !item)) return res.status(400).json({ error: 'Проверьте выбранные позиции, количество и остатки в каталоге. Обновите карточку и повторите.' })
+    if (proposal_items.length === 0) {
+      return res.status(409).json({ error: 'Нельзя сформировать коммерческое КП без товарных позиций с ценой. Загрузите предложение поставщика по брендам, сохраните карточку и пересчитайте скоринг лидов.' })
+    }
     const proposal_total = proposal_items.reduce((sum: number, item: any) => sum + Number(item.price || 0) * item.quantity, 0)
     const proposalLead = { ...lead, proposal_items, matched_skus, matched_brands: [...new Set(proposal_items.map((item: any) => item.brand))] }
     const filename = await generateKP(proposalLead, { ...supplier, name: supplier.name || catalog.supplier_name, payment_terms: supplier.payment_terms || catalog.payment_terms, delivery: supplier.delivery || catalog.delivery }, {
@@ -791,6 +808,7 @@ async function launchPipelineJob(params: {
   city: string; industry: string; limit: number
   options?: any
   source?: { search_task_id?: string; search_task_name?: string }
+  onStart?: (jobId: string) => Promise<void> | void
   onComplete?: (result: { status: string; found: number; added: number; error?: string }) => void
 }): Promise<{ jobId: string } | null> {
   const { city, industry, limit, options, source, onComplete } = params
@@ -824,6 +842,17 @@ async function launchPipelineJob(params: {
     delete pipelineJobs[jobId]
     await db.jobs.releasePipelineLock(jobId).catch(() => {})
     console.error('❌ Не удалось сохранить задачу пайплайна:', error)
+    return null
+  }
+
+  try {
+    await params.onStart?.(jobId)
+  } catch (error) {
+    const message = 'Не удалось обновить статус задачи поиска перед запуском'
+    await updateJob(jobId, { status: 'error', error: message })
+    delete pipelineJobs[jobId]
+    await db.jobs.releasePipelineLock(jobId).catch(() => {})
+    console.error('❌ Не удалось подготовить задачу поиска:', error)
     return null
   }
   console.log(`📥 Запуск поиска: city=${city}, industry=${industry}, limit=${safeLimit} (job ${jobId})`)
@@ -922,6 +951,21 @@ async function respondWithActiveJob(res: any) {
   const active = await db.jobs.getActive()
   if (!active) return res.status(503).json({ error: 'Не удалось запустить задачу поиска. Попробуйте ещё раз.' })
   return res.json({ jobId: active.id, alreadyRunning: true })
+}
+
+async function recoverOrphanedRunningSearchTasks(): Promise<number> {
+  const activeJob = await db.jobs.getActive()
+  const tasks = await db.tasks.list()
+  const orphaned = orphanedRunningSearchTasks(tasks, activeJob)
+  for (const task of orphaned) {
+    await db.tasks.update(task.id, {
+      status: 'error',
+      last_run: new Date().toISOString(),
+      last_error: 'Поиск прерван: активный процесс не найден. Запустите задачу повторно.',
+      active_job_id: undefined,
+    })
+  }
+  return orphaned.length
 }
 
 app.post('/api/run-pipeline', runCooldown, async (req, res) => {
@@ -1024,20 +1068,28 @@ app.post('/api/search-tasks/:id/run', runCooldown, async (req, res) => {
       useGeocode: task.use_geocode !== false
     },
     source: { search_task_id: task.id, search_task_name: task.name },
+    onStart: async (jobId) => {
+      const updated = await db.tasks.update(task.id, {
+        status: 'running',
+        started_at: new Date().toISOString(),
+        active_job_id: jobId,
+        last_error: undefined,
+      })
+      if (!updated) throw new Error('Задача поиска не найдена')
+    },
     onComplete: async (result) => {
       await db.tasks.update(task.id, {
         status: result.status === 'done' ? 'done' : 'error',
         last_run: new Date().toISOString(),
         leads_found: result.found,
         leads_added: result.added,
-        last_error: result.error
+        last_error: result.error,
+        active_job_id: undefined,
       }).catch(() => {})
     }
   })
 
   if (!launched) return respondWithActiveJob(res)
-
-  await db.tasks.update(task.id, { status: 'running', last_error: undefined })
   res.json({ jobId: launched.jobId })
 })
 
@@ -1054,11 +1106,15 @@ async function main() {
   // Джобы, прерванные рестартом, помечаем ошибкой
   const stale = await db.jobs.markStaleRunningAsError()
   if (stale) console.log(`⚠️ Прервано рестартом: ${stale} задач пайплайна`)
+  const orphanedTasks = await recoverOrphanedRunningSearchTasks()
+  if (orphanedTasks) console.log(`⚠️ Снято зависших статусов поиска: ${orphanedTasks}`)
 
   const staleJobSweep = setInterval(async () => {
     try {
       const recovered = await db.jobs.markStaleRunningAsError()
       if (recovered) console.log(`⚠️ Помечено прерванными после истечения lease: ${recovered} задач`)
+      const orphaned = await recoverOrphanedRunningSearchTasks()
+      if (orphaned) console.log(`⚠️ Снято зависших статусов поиска: ${orphaned}`)
     } catch (error) {
       console.error('⚠️ Не удалось проверить зависшие задачи:', error)
     }

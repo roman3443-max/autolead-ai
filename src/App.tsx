@@ -142,6 +142,13 @@ export default function App() {
   })
   const [supplierDraft, setSupplierDraft] = useState<any>(supplier)
   const [supplierOpen, setSupplierOpen] = useState(false)
+  const supplierRequiredFields: [string, string][] = [
+    ['name', 'Название компании'], ['inn', 'ИНН'], ['contact', 'Контактное лицо'],
+    ['phone', 'Телефон'], ['email', 'Email'], ['address', 'Адрес'],
+    ['payment_terms', 'Условия оплаты'], ['delivery', 'Доставка'], ['offer_validity', 'Срок действия КП'],
+  ]
+  const missingSupplierFields = supplierRequiredFields.filter(([key]) => !String(supplierDraft?.[key] || '').trim())
+  const hasSupplierOffer = (supplierDraft?.catalogItems || []).length > 0
 
   const [authRequired, setAuthRequired] = useState(() => typeof window !== 'undefined' && !getToken())
   const [loginEmail, setLoginEmail] = useState('')
@@ -523,6 +530,10 @@ export default function App() {
   }
 
   const handleGenerateKP = async (lead: Lead) => {
+    if (!(lead.matched_skus || []).length) {
+      toast('Для КП нет позиций с ценой. Загрузите предложение поставщика по брендам и пересчитайте скоринг.', 'info')
+      return
+    }
     const items = (lead.matched_skus || []).filter(item => (proposalSelection[item.sku || `${item.brand}|${item.name}`] || 0) > 0)
       .map(item => ({ sku: item.sku, brand: item.brand, name: item.name, quantity: proposalSelection[item.sku || `${item.brand}|${item.name}`] }))
     if ((lead.matched_skus || []).length > 0 && items.length === 0) {
@@ -743,11 +754,12 @@ export default function App() {
     { label: 'Email найден на сайте', done: selectedLead.email_source === 'website' && (selectedLead.lpr_emails || []).length > 0 },
     { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
     { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
-    { label: 'КП отправлено', done: ['contacted', 'converted'].includes(selectedLead.status) },
+    { label: 'КП отправлено', done: (selectedLead.activities || []).some(activity => activity.outcome === 'proposal_sent') },
   ] : []
 
   const sm = selectedLead ? (STATUS_META[selectedLead.status] || STATUS_META.new) : STATUS_META.new
   const tm = selectedLead ? (TIER_META[selectedLead.lead_tier] || TIER_META.C) : TIER_META.C
+  const sentStatusNeedsReview = Boolean(selectedLead && ['contacted', 'converted'].includes(selectedLead.status) && !(selectedLead.activities || []).some(activity => activity.outcome === 'proposal_sent'))
 
   return (
     <div className="min-h-screen md:flex">
@@ -914,6 +926,7 @@ export default function App() {
               <div className="label">Готовность к отправке</div>
               <div className="card !bg-ink-800/60 px-4 py-3">
                 <ReadinessChecklist items={checklist} />
+                {sentStatusNeedsReview && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-200">Статус показывает отправленное КП, но в истории контактов нет записи об отправке. Проверьте карточку лида и зафиксируйте фактический результат.</div>}
               </div>
             </div>
 
@@ -1121,11 +1134,11 @@ export default function App() {
               </button>
               <button
                 onClick={() => selectedLead.pdf_file ? handleDownloadPDF(selectedLead) : handleGenerateKP(selectedLead)}
-                disabled={kpGeneratingId === selectedLead.id || (!selectedLead.pdf_file && ['not_target', 'blacklisted'].includes(selectedLead.status))}
+                disabled={kpGeneratingId === selectedLead.id || (!selectedLead.pdf_file && (!(selectedLead.matched_skus || []).length || ['not_target', 'blacklisted'].includes(selectedLead.status)))}
                 className="btn-ghost text-[13px]"
-                title={!selectedLead.pdf_file && ['not_target', 'blacklisted'].includes(selectedLead.status) ? 'Верните лид в рабочий статус для формирования КП' : undefined}
+                title={!selectedLead.pdf_file && !(selectedLead.matched_skus || []).length ? 'Сначала загрузите предложение поставщика по брендам и пересчитайте лиды' : !selectedLead.pdf_file && ['not_target', 'blacklisted'].includes(selectedLead.status) ? 'Верните лид в рабочий статус для формирования КП' : undefined}
               >
-                <FileDown size={14} /> {kpGeneratingId === selectedLead.id ? 'Формирую КП…' : selectedLead.pdf_file ? 'Открыть КП' : ['not_target', 'blacklisted'].includes(selectedLead.status) ? 'Лид исключён' : 'Сформировать КП'}
+                <FileDown size={14} /> {kpGeneratingId === selectedLead.id ? 'Формирую КП…' : selectedLead.pdf_file ? 'Открыть КП' : ['not_target', 'blacklisted'].includes(selectedLead.status) ? 'Лид исключён' : !(selectedLead.matched_skus || []).length ? 'Нет подходящих позиций' : 'Сформировать КП'}
               </button>
               <button onClick={() => handleDeleteLead(selectedLead)} className="btn-danger text-[13px] ml-auto">
                 <Trash2 size={14} /> Удалить
@@ -1272,6 +1285,11 @@ export default function App() {
                 <input value={supplierDraft[key] || ''} onChange={e => setSupplierDraft({ ...supplierDraft, [key]: e.target.value })} className="input" />
               </div>
             ))}
+          </div>
+          <div className={`rounded-lg border p-3 text-xs ${missingSupplierFields.length || !hasSupplierOffer ? 'border-amber-500/30 bg-amber-500/5 text-amber-200' : 'border-emerald-500/30 bg-emerald-500/5 text-emerald-200'}`}>
+            <div className="font-semibold">{missingSupplierFields.length || !hasSupplierOffer ? 'Карточка пока не готова для коммерческого КП' : 'Карточка готова для коммерческого КП'}</div>
+            {missingSupplierFields.length > 0 && <div className="mt-1">Заполните: {missingSupplierFields.map(([, label]) => label).join(', ')}.</div>}
+            {!hasSupplierOffer && <div className="mt-1">Загрузите предложение с актуальными ценами и остатками.</div>}
           </div>
           <div>
             <label className="label">Текст предложения и особые условия</label>

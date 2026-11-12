@@ -414,10 +414,11 @@ export default function LeadsPage(p: Props) {
         {importPreview && (
           <div className="space-y-4">
             <p className="text-sm text-slate-400">Файл: <span className="text-slate-200">{importSource}</span>. Импортируем с пересчётом скоринга и проверкой дублей.</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               {[
                 ['Строк', importPreview.total], ['К импорту', importPreview.importable],
                 ['Дубли', importPreview.duplicates], ['Ошибки', importPreview.invalid],
+                ['Неполные', importPreview.needsReview || 0],
               ].map(([label, value]) => (
                 <div key={label} className="card !bg-ink-800/60 p-3">
                   <div className="text-xs text-slate-500">{label}</div>
@@ -429,7 +430,10 @@ export default function LeadsPage(p: Props) {
               <div className="label">Новые лиды (показаны первые 20)</div>
               <div className="max-h-40 overflow-y-auto rounded-lg border border-line divide-y divide-line/60">
                 {importPreview.newPreview.map((lead: any) => <div key={lead.row} className="px-3 py-2 text-xs text-slate-300 flex justify-between gap-3">
-                  <span>{lead.company_name}{lead.city ? ` · ${lead.city}` : ''}{lead.industry ? ` · ${lead.industry}` : ''}</span>
+                  <div className="min-w-0">
+                    <div>{lead.company_name}{lead.city ? ` · ${lead.city}` : ''}{lead.industry ? ` · ${lead.industry}` : ''}</div>
+                    {!!lead.qualityWarnings?.length && <div className="mt-1 text-[11px] text-amber-300">Проверьте: {lead.qualityWarnings.join(' · ')}</div>}
+                  </div>
                   <span className="shrink-0">Скор {lead.lead_score} · {lead.lead_tier}</span>
                 </div>)}
               </div>
