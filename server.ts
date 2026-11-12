@@ -944,6 +944,7 @@ async function recoverOrphanedRunningSearchTasks(): Promise<number> {
   for (const task of orphaned) {
     await db.tasks.update(task.id, {
       status: 'error',
+      last_run: new Date().toISOString(),
       last_error: 'Поиск прерван: активный процесс не найден. Запустите задачу повторно.',
       active_job_id: undefined,
     })
