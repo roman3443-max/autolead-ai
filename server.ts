@@ -402,6 +402,9 @@ app.post('/api/leads/:id/generate-kp', async (req, res) => {
           return { ...product, quantity }
         })
     if (proposal_items.some((item: any) => !item)) return res.status(400).json({ error: 'Проверьте выбранные позиции, количество и остатки в каталоге. Обновите карточку и повторите.' })
+    if (proposal_items.length === 0) {
+      return res.status(409).json({ error: 'Нельзя сформировать коммерческое КП без товарных позиций с ценой. Загрузите предложение поставщика по брендам, сохраните карточку и пересчитайте скоринг лидов.' })
+    }
     const proposal_total = proposal_items.reduce((sum: number, item: any) => sum + Number(item.price || 0) * item.quantity, 0)
     const proposalLead = { ...lead, proposal_items, matched_skus, matched_brands: [...new Set(proposal_items.map((item: any) => item.brand))] }
     const filename = await generateKP(proposalLead, { ...supplier, name: supplier.name || catalog.supplier_name, payment_terms: supplier.payment_terms || catalog.payment_terms, delivery: supplier.delivery || catalog.delivery }, {
