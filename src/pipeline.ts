@@ -48,7 +48,7 @@ interface PipelineOptions {
 }
 
 const DEFAULT_SCORING: ScoringConfig = {
-  weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
+  weights: { lpr: 25, emails: 15, brands: 35, businessSize: 15, wholesale: 10, content: 0 },
   tiers: { a: 75, b: 50 },
   businessSizeScores: { large: 15, medium: 10, small: 5, unknown: 2 },
   retailPenalty: 15
@@ -73,11 +73,15 @@ function loadScoringConfig(overrides?: Partial<ScoringConfig> | null): ScoringCo
     businessSizeScores: { ...base.businessSizeScores, ...(overrides?.businessSizeScores || {}) },
     retailPenalty: typeof overrides?.retailPenalty === 'number' ? overrides.retailPenalty : base.retailPenalty
   }
+  // Старые конфиги содержат вес content. Он больше не начисляется: объём текста сайта
+  // не является признаком покупательского потенциала.
+  merged.weights.brands = Math.min(100, merged.weights.brands + (merged.weights.content || 0))
+  merged.weights.content = 0
   const sum = Object.values(merged.weights).reduce((a, b) => a + b, 0)
-  if (sum !== 100) {
-    console.log(`⚠️ Сумма весов в scoring_config.json равна ${sum} (ожидалось 100). Скоринг работает, но проверьте конфиг.`)
+  if (sum > 100) {
+    console.log(`⚠️ Сумма весов скоринга равна ${sum}; проверьте конфиг.`)
   }
-  console.log('⚖️ Веса скоринга:', JSON.stringify(merged.weights), '| штраф за розницу:', merged.retailPenalty)
+  console.log('⚖️ Веса скоринга:', JSON.stringify(merged.weights), '| отсутствие признаков опта не снижает оценку')
   return merged
 }
 
@@ -124,16 +128,22 @@ export function matchCatalogItems(brands: string[], catalog: SupplierCatalog, ma
   const matched = new Set(getMatchedBrands(brands, catalog).map(normalizeBrand))
   return (catalog.items || []).filter(item => matched.has(normalizeBrand(item.brand))).slice(0, maxItems)
 }
-function buildProductsTable(items: CatalogItem[]): string {
+function buildProductsTable(items: (CatalogItem & { quantity?: number })[]): string {
   if (!items.length) return ''
   const rows = items
-    .map(i => `<tr><td>${escapeHtml(i.brand)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.car)}</td><td>${escapeHtml(i.sku)}</td><td><b>${Number(i.price || 0).toLocaleString('ru-RU')} ₽</b></td><td>${Number(i.stock || 0)} шт.</td></tr>`)
+    .map(i => {
+      const quantity = Math.max(1, Number(i.quantity) || 1)
+      const lineTotal = Number(i.price || 0) * quantity
+      return `<tr><td>${escapeHtml(i.brand)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.car)}</td><td>${escapeHtml(i.sku)}</td><td>${Number(i.price || 0).toLocaleString('ru-RU')} ₽</td><td>${quantity}</td><td>${Number(i.stock || 0)} шт.</td><td><b>${lineTotal.toLocaleString('ru-RU')} ₽</b></td></tr>`
+    })
     .join('\n')
+  const total = items.reduce((sum, item) => sum + Number(item.price || 0) * Math.max(1, Number(item.quantity) || 1), 0)
   return `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px">
-<thead><tr><th>Бренд</th><th>Наименование</th><th>Применяемость</th><th>Артикул</th><th>Цена</th><th>Остаток</th></tr></thead>
+<thead><tr><th>Бренд</th><th>Наименование</th><th>Применяемость</th><th>Артикул</th><th>Цена</th><th>Кол-во</th><th>Остаток</th><th>Сумма</th></tr></thead>
 <tbody>
 ${rows}
 </tbody>
+<tfoot><tr><td colspan="7" style="text-align:right"><b>Итого:</b></td><td><b>${total.toLocaleString('ru-RU')} ₽</b></td></tr></tfoot>
 </table>`
 }
 
@@ -166,6 +176,7 @@ interface LeadData {
   brands: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
+  score_breakdown?: { total: number; factors: { key: string; label: string; points: number; detail: string }[] }
   business_size?: 'small' | 'medium' | 'large' | 'unknown'
   wholesale?: boolean
   reason?: string
@@ -366,23 +377,32 @@ function extractAddress(content: string): string {
 }
 
 // --- Скоринг ---
+function calculateScoreBreakdown(cfg: ScoringConfig, input: {
+  lprCount: number; emailsCount: number; brandsCount: number
+  businessSize: 'small' | 'medium' | 'large' | 'unknown'
+  wholesale: boolean
+}): { total: number; factors: { key: string; label: string; points: number; detail: string }[] } {
+  const w = cfg.weights
+  const sizeShare = { large: 1, medium: 0.7, small: 0.4, unknown: 0 }[input.businessSize]
+  const sizePoints = Math.round((w.businessSize || 0) * sizeShare)
+  const brandPoints = input.brandsCount > 2 ? w.brands : input.brandsCount > 0 ? Math.round(w.brands / 2) : 0
+  const raw = [
+    { key: 'lpr', label: 'Контактное лицо', points: input.lprCount > 0 ? w.lpr : 0, detail: input.lprCount > 0 ? `Найдено: ${input.lprCount}` : 'Не найдено' },
+    { key: 'emails', label: 'Email компании', points: input.emailsCount > 0 ? w.emails : 0, detail: input.emailsCount > 0 ? `Найдено адресов: ${input.emailsCount}; принадлежность ЛПР не подтверждена` : 'Не найден' },
+    { key: 'brands', label: 'Совпадение с каталогом', points: brandPoints, detail: input.brandsCount > 2 ? `Совпало брендов: ${input.brandsCount}` : input.brandsCount > 0 ? `Совпало брендов: ${input.brandsCount}; начислена половина веса` : 'Совпадений нет' },
+    { key: 'businessSize', label: 'Размер бизнеса', points: sizePoints, detail: input.businessSize === 'unknown' ? 'Размер не определён' : input.businessSize === 'large' ? 'Крупный бизнес · полный вес' : input.businessSize === 'medium' ? 'Средний бизнес · 70% веса' : 'Малый бизнес · 40% веса' },
+    { key: 'wholesale', label: 'Оптовый профиль', points: input.wholesale ? w.wholesale : 0, detail: input.wholesale ? 'На сайте найдены признаки опта' : 'Опт не подтверждён; баллы не начислены и штраф не применён' },
+  ]
+  const total = Math.max(0, Math.min(raw.reduce((sum, factor) => sum + factor.points, 0), 100))
+  return { total, factors: raw }
+}
+
 function calculateLeadScore(cfg: ScoringConfig, input: {
   lprCount: number; emailsCount: number; brandsCount: number
   businessSize: 'small' | 'medium' | 'large' | 'unknown'
-  wholesale: boolean; contentLength: number
+  wholesale: boolean
 }): number {
-  const w = cfg.weights
-  let score = 0
-  if (input.lprCount > 0) score += w.lpr
-  if (input.emailsCount > 0) score += w.emails
-  if (input.brandsCount > 2) score += w.brands
-  else if (input.brandsCount > 0) score += Math.round(w.brands / 2)
-  score += cfg.businessSizeScores[input.businessSize] ?? cfg.businessSizeScores.unknown
-  if (input.wholesale) score += w.wholesale
-  else score -= cfg.retailPenalty // штраф за розничный бизнес (как в исходной модели)
-  if (input.contentLength > 1500) score += w.content
-  else if (input.contentLength > 500) score += Math.round(w.content / 2)
-  return Math.max(0, Math.min(score, 100))
+  return calculateScoreBreakdown(cfg, input).total
 }
 
 function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {
@@ -398,18 +418,15 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
   const catalog = loadCatalog(catalogOverride)
   const matched_brands = getMatchedBrands(Array.isArray(lead.brands) ? lead.brands : [], catalog)
   const size = ['small', 'medium', 'large'].includes(lead.business_size) ? lead.business_size : 'unknown'
-  const score = calculateLeadScore(cfg, {
+  const score_breakdown = calculateScoreBreakdown(cfg, {
     lprCount: Array.isArray(lead.lpr) ? lead.lpr.length : 0,
-    emailsCount: lead.email_source === 'website' && Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
+    emailsCount: Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
     brandsCount: matched_brands.length,
     businessSize: size,
     wholesale: Boolean(lead.wholesale),
-    contentLength: 0 // у старых лидов нет исходного текста сайта — не учитываем
   })
-  // Контент не сохраняем у лидов, поэтому чтобы не занижать всех старых записей,
-  // даём половину веса контента по умолчанию
-  const withContentFallback = Math.min(100, score + Math.round(cfg.weights.content / 2))
-  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
+  const score = score_breakdown.total
+  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), score_breakdown, lead_score: score, lead_tier: getLeadTier(cfg, score) }
 }
 
 // --- Этап 1: Поиск компаний через Tavily ---
@@ -494,14 +511,14 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const matched_brands = getMatchedBrands(brands, catalog)
       const address = extractAddress(content)
       const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true, address)
-      const lead_score = calculateLeadScore(scoringCfg, {
+      const score_breakdown = calculateScoreBreakdown(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
         brandsCount: matched_brands.length,
         businessSize,
         wholesale,
-        contentLength: content.length
       })
+      const lead_score = score_breakdown.total
       const lead_tier = getLeadTier(scoringCfg, lead_score)
       const matched_skus = matchCatalogItems(brands, catalog)
 
@@ -519,6 +536,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         matched_brands,
         lead_score,
         lead_tier,
+        score_breakdown,
         business_size: businessSize,
         wholesale,
         reason,
@@ -547,7 +565,7 @@ export async function generateKP(lead: any, supplierInput: any, hooks?: { onKP?:
   console.log(`📝 Формирование КП для ${lead.company_name}...`)
   try {
     const supplier = typeof supplierInput === 'string' ? { name: supplierInput } : (supplierInput || {})
-    const products = Array.isArray(lead.matched_skus) ? lead.matched_skus : []
+    const products = Array.isArray(lead.proposal_items) ? lead.proposal_items : (Array.isArray(lead.matched_skus) ? lead.matched_skus : [])
     const productsTable = buildProductsTable(products)
     const recipient = Array.isArray(lead.lpr) && lead.lpr[0]?.name ? `Уважаемый(ая) ${escapeHtml(lead.lpr[0].name)}!` : 'Добрый день!'
     const supplierName = escapeHtml(supplier.name || supplier.supplier_name || 'Поставщик')
@@ -570,7 +588,7 @@ export async function generateKP(lead: any, supplierInput: any, hooks?: { onKP?:
     const productsBlock = productsTable
       ? `<h2>Предложение по ассортименту${brands ? `: ${brands}` : ''}</h2>${productsTable}`
       : `<h2>Ассортимент</h2><p>Подготовим предложение по интересующим вас брендам и артикулам после уточнения потребности.</p>`
-    const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Коммерческое предложение — ${escapeHtml(lead.company_name)}</title><style>body{font:15px/1.55 Arial,sans-serif;color:#172033;max-width:900px;margin:36px auto;padding:0 24px}h1{font-size:26px}h2{font-size:18px;margin-top:28px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#f1f5f9}.muted{color:#64748b}</style></head><body><h1>Коммерческое предложение</h1><p class="muted">${new Date().toLocaleDateString('ru-RU')}</p><p>${recipient}</p><p>Компания <b>${escapeHtml(lead.company_name)}</b>${lead.city ? `, ${escapeHtml(lead.city)}` : ''}.</p><p>${supplierName} предлагает рассмотреть условия сотрудничества по поставке автозапчастей.</p>${customOffer}${productsBlock}${terms ? `<h2>Условия сотрудничества</h2><ul>${terms}</ul>` : ''}<h2>Связаться с поставщиком</h2>${contactLines || '<p>Контактные данные поставщика не заполнены.</p>'}<p>Будем рады уточнить вашу потребность и подготовить актуальный расчёт.</p></body></html>`
+    const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Коммерческое предложение — ${escapeHtml(lead.company_name)}</title><style>@media print{body{margin:0 auto}.print-hint{display:none}}body{font:15px/1.55 Arial,sans-serif;color:#172033;max-width:900px;margin:36px auto;padding:0 24px}h1{font-size:26px}h2{font-size:18px;margin-top:28px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#f1f5f9}.muted{color:#64748b}</style></head><body><p class="muted print-hint">Чтобы сохранить КП в PDF, нажмите Ctrl+P и выберите «Сохранить как PDF».</p><h1>Коммерческое предложение</h1><p class="muted">${new Date().toLocaleDateString('ru-RU')}</p><p>${recipient}</p><p>Компания <b>${escapeHtml(lead.company_name)}</b>${lead.city ? `, ${escapeHtml(lead.city)}` : ''}.</p><p>${supplierName} предлагает рассмотреть условия сотрудничества по поставке автозапчастей.</p>${customOffer}${productsBlock}${terms ? `<h2>Условия сотрудничества</h2><ul>${terms}</ul>` : ''}<h2>Связаться с поставщиком</h2>${contactLines || '<p>Контактные данные поставщика не заполнены.</p>'}<p>Будем рады уточнить вашу потребность и подготовить актуальный расчёт.</p></body></html>`
     const slug = String(lead.company_name || 'lead').replace(/[^a-z0-9а-яё]/gi, '_').slice(0, 55) || 'lead'
     const safeId = String(lead.id || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
     const fileName = `${slug}_${safeId}.html`

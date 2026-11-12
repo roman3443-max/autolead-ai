@@ -1,5 +1,22 @@
 export interface Lpr { name: string; position: string; evidence?: string }
 
+export interface ScoreFactor {
+  key: string
+  label: string
+  points: number
+  detail: string
+}
+
+export interface ProposalItem {
+  sku?: string
+  brand: string
+  name: string
+  car?: string
+  price: number
+  stock?: number
+  quantity?: number
+}
+
 export interface Lead {
   id: string
   company_name: string
@@ -19,13 +36,18 @@ export interface Lead {
   matched_brands?: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
+  score_breakdown?: { total: number; factors: ScoreFactor[] }
+  matched_skus?: ProposalItem[]
+  proposal_items?: ProposalItem[]
+  proposal_total?: number
+  proposal_created_at?: string
   business_size?: 'small' | 'medium' | 'large' | 'unknown'
   wholesale?: boolean
   reason?: string
   status: string
   pdf_file?: string | null
   comments?: string[]
-  activities?: { id: string; created_at: string; note: string; next_contact_at?: string | null }[]
+  activities?: { id: string; created_at: string; note: string; outcome?: string; next_contact_at?: string | null }[]
   next_contact_at?: string | null
   status_history?: { status: string; date: string }[]
   sector_id?: string
@@ -90,5 +112,5 @@ export const SIZE_LABELS: Record<string, string> = {
 
 export const SCORING_FIELDS: [string, string][] = [
   ['lpr', 'ЛПР'], ['emails', 'Email'], ['brands', 'Совпадение с ассортиментом'],
-  ['businessSize', 'Размер'], ['wholesale', 'Опт'], ['content', 'Контент сайта'],
+  ['businessSize', 'Размер бизнеса'], ['wholesale', 'Оптовый профиль'],
 ]
