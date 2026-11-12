@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "npx tsx server.ts"
+    "start": "npx tsx server.ts",
+    "test": "tsx --test src/lib/searchTaskRecovery.test.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
