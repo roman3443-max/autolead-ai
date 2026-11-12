@@ -48,7 +48,7 @@ interface PipelineOptions {
 }
 
 const DEFAULT_SCORING: ScoringConfig = {
-  weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 15 },
+  weights: { lpr: 25, emails: 15, brands: 20, businessSize: 15, wholesale: 10, content: 0 },
   tiers: { a: 75, b: 50 },
   businessSizeScores: { large: 15, medium: 10, small: 5, unknown: 2 },
   retailPenalty: 15
@@ -166,6 +166,7 @@ interface LeadData {
   brands: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
+  score_breakdown?: { total: number; factors: { key: string; label: string; points: number; detail: string }[] }
   business_size?: 'small' | 'medium' | 'large' | 'unknown'
   wholesale?: boolean
   reason?: string
@@ -366,23 +367,31 @@ function extractAddress(content: string): string {
 }
 
 // --- Скоринг ---
+function calculateScoreBreakdown(cfg: ScoringConfig, input: {
+  lprCount: number; emailsCount: number; brandsCount: number
+  businessSize: 'small' | 'medium' | 'large' | 'unknown'
+  wholesale: boolean
+}): { total: number; factors: { key: string; label: string; points: number; detail: string }[] } {
+  const w = cfg.weights
+  const sizePoints = cfg.businessSizeScores[input.businessSize] ?? cfg.businessSizeScores.unknown
+  const brandPoints = input.brandsCount > 2 ? w.brands : input.brandsCount > 0 ? Math.round(w.brands / 2) : 0
+  const raw = [
+    { key: 'lpr', label: 'Контактное лицо', points: input.lprCount > 0 ? w.lpr : 0, detail: input.lprCount > 0 ? `Найдено: ${input.lprCount}` : 'Не найдено' },
+    { key: 'emails', label: 'Email компании', points: input.emailsCount > 0 ? w.emails : 0, detail: input.emailsCount > 0 ? `Найдено адресов: ${input.emailsCount}; принадлежность ЛПР не подтверждена` : 'Не найден' },
+    { key: 'brands', label: 'Совпадение с каталогом', points: brandPoints, detail: input.brandsCount > 2 ? `Совпало брендов: ${input.brandsCount}` : input.brandsCount > 0 ? `Совпало брендов: ${input.brandsCount}; начислена половина веса` : 'Совпадений нет' },
+    { key: 'businessSize', label: 'Размер бизнеса', points: sizePoints, detail: input.businessSize === 'unknown' ? 'Размер не определён' : input.businessSize === 'large' ? 'Крупный бизнес' : input.businessSize === 'medium' ? 'Средний бизнес' : 'Малый бизнес' },
+    { key: 'wholesale', label: 'Оптовый профиль', points: input.wholesale ? w.wholesale : -cfg.retailPenalty, detail: input.wholesale ? 'На сайте найдены признаки опта' : 'Признаки опта не найдены; применён штраф' },
+  ]
+  const total = Math.max(0, Math.min(raw.reduce((sum, factor) => sum + factor.points, 0), 100))
+  return { total, factors: raw }
+}
+
 function calculateLeadScore(cfg: ScoringConfig, input: {
   lprCount: number; emailsCount: number; brandsCount: number
   businessSize: 'small' | 'medium' | 'large' | 'unknown'
-  wholesale: boolean; contentLength: number
+  wholesale: boolean
 }): number {
-  const w = cfg.weights
-  let score = 0
-  if (input.lprCount > 0) score += w.lpr
-  if (input.emailsCount > 0) score += w.emails
-  if (input.brandsCount > 2) score += w.brands
-  else if (input.brandsCount > 0) score += Math.round(w.brands / 2)
-  score += cfg.businessSizeScores[input.businessSize] ?? cfg.businessSizeScores.unknown
-  if (input.wholesale) score += w.wholesale
-  else score -= cfg.retailPenalty // штраф за розничный бизнес (как в исходной модели)
-  if (input.contentLength > 1500) score += w.content
-  else if (input.contentLength > 500) score += Math.round(w.content / 2)
-  return Math.max(0, Math.min(score, 100))
+  return calculateScoreBreakdown(cfg, input).total
 }
 
 function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {
@@ -398,18 +407,15 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
   const catalog = loadCatalog(catalogOverride)
   const matched_brands = getMatchedBrands(Array.isArray(lead.brands) ? lead.brands : [], catalog)
   const size = ['small', 'medium', 'large'].includes(lead.business_size) ? lead.business_size : 'unknown'
-  const score = calculateLeadScore(cfg, {
+  const score_breakdown = calculateScoreBreakdown(cfg, {
     lprCount: Array.isArray(lead.lpr) ? lead.lpr.length : 0,
-    emailsCount: lead.email_source === 'website' && Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
+    emailsCount: Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
     brandsCount: matched_brands.length,
     businessSize: size,
     wholesale: Boolean(lead.wholesale),
-    contentLength: 0 // у старых лидов нет исходного текста сайта — не учитываем
   })
-  // Контент не сохраняем у лидов, поэтому чтобы не занижать всех старых записей,
-  // даём половину веса контента по умолчанию
-  const withContentFallback = Math.min(100, score + Math.round(cfg.weights.content / 2))
-  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
+  const score = score_breakdown.total
+  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), score_breakdown, lead_score: score, lead_tier: getLeadTier(cfg, score) }
 }
 
 // --- Этап 1: Поиск компаний через Tavily ---
@@ -494,14 +500,14 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const matched_brands = getMatchedBrands(brands, catalog)
       const address = extractAddress(content)
       const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true, address)
-      const lead_score = calculateLeadScore(scoringCfg, {
+      const score_breakdown = calculateScoreBreakdown(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
         brandsCount: matched_brands.length,
         businessSize,
         wholesale,
-        contentLength: content.length
       })
+      const lead_score = score_breakdown.total
       const lead_tier = getLeadTier(scoringCfg, lead_score)
       const matched_skus = matchCatalogItems(brands, catalog)
 
@@ -519,6 +525,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         matched_brands,
         lead_score,
         lead_tier,
+        score_breakdown,
         business_size: businessSize,
         wholesale,
         reason,
