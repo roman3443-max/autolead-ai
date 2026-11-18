@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Search, Download, Inbox, Copy, FileDown, Users, Sparkles, Briefcase, Upload } from 'lucide-react'
+import { Search, Download, Inbox, Copy, FileDown, Users, Sparkles, Briefcase, Upload, X } from 'lucide-react'
 import { CenterModal } from '../components/Drawer'
 import { Lead, STATUS_META, TIER_META, SIZE_LABELS } from '../lib/types'
 import StatCard, { StatSkeleton } from '../components/StatCard'
@@ -12,6 +12,8 @@ interface Props {
   statusFilter: string
   setStatusFilter: (v: string) => void
   filteredLeads: Lead[]
+  searchTaskFilter: { id: string; name: string } | null
+  onClearSearchTaskFilter: () => void
   onOpenLead: (lead: Lead) => void
   onCopyLetter: (lead: Lead) => void
   onDownloadPDF: (lead: Lead) => void
@@ -166,6 +168,18 @@ export default function LeadsPage(p: Props) {
         </div>
       )}
 
+      {p.searchTaskFilter && (
+        <div className="card flex items-center justify-between gap-3 flex-wrap px-4 py-3">
+          <div className="text-sm text-slate-300">
+            Лиды задачи: <span className="font-semibold text-white">{p.searchTaskFilter.name}</span>
+            <span className="ml-2 text-xs text-slate-500">Показаны только компании, добавленные этим поиском.</span>
+          </div>
+          <button type="button" onClick={p.onClearSearchTaskFilter} className="btn-ghost !py-1.5 text-xs">
+            <X size={13} /> Показать всю базу
+          </button>
+        </div>
+      )}
+
       <section className="card p-4 md:p-5 space-y-4">
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
@@ -262,7 +276,9 @@ export default function LeadsPage(p: Props) {
               {Object.entries(STATUS_META).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
             </select>
             <div className="text-[13px] text-slate-500 ml-auto">
-              Найдено: <span className="text-slate-200 font-semibold tabular-nums">{visibleLeads.length}</span> из {p.leads.length}
+              {p.searchTaskFilter ? 'В этой задаче: ' : 'Найдено: '}
+              <span className="text-slate-200 font-semibold tabular-nums">{visibleLeads.length}</span>
+              {!p.searchTaskFilter && <> из {p.leads.length}</>}
             </div>
             <button onClick={() => fileInput.current?.click()} disabled={importBusy} className="btn-ghost !py-2 text-[13px]">
               <Upload size={14} /> Импорт CSV
@@ -309,7 +325,7 @@ export default function LeadsPage(p: Props) {
                 <tr className="border-b border-line">
                   <th className="th">Компания</th>
                   <th className="th">ЛПР и контакты</th>
-                  <th className="th">Бренды</th>
+                  <th className="th">Бренды · упоминания и совпадения</th>
                   <th className="th">Скор</th>
                   <th className="th">Статус</th>
                   <th className="th text-right !pr-5">Действия</th>
@@ -364,11 +380,22 @@ export default function LeadsPage(p: Props) {
                         )}
                       </td>
                       <td className="td">
-                        <div className="flex flex-wrap gap-1 max-w-[180px]">
-                          {lead.brands.slice(0, 4).map((b, i) => (
-                            <span key={i} className="chip bg-ink-700 text-slate-300">{b}</span>
-                          ))}
-                          {lead.brands.length > 4 && <span className="text-[11px] text-slate-500">+{lead.brands.length - 4}</span>}
+                        <div className="max-w-[220px] space-y-1.5">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wide text-slate-600 mb-1">Есть в предложении поставщика</div>
+                            {lead.matched_brands?.length ? (
+                              <div className="flex flex-wrap gap-1">
+                                {lead.matched_brands.slice(0, 4).map((brand, i) => <span key={i} className="chip bg-emerald-500/10 text-emerald-300">{brand}</span>)}
+                                {lead.matched_brands.length > 4 && <span className="text-[11px] text-slate-500">+{lead.matched_brands.length - 4}</span>}
+                              </div>
+                            ) : <span className="text-[11px] text-slate-500">Нет совпадений</span>}
+                          </div>
+                          {!!lead.brands?.length && (
+                            <div className="text-[11px] text-slate-500 leading-snug">
+                              {lead.source_type === 'import' ? 'В исходном импорте: ' : 'Упоминания на сайте · наличие не подтверждено: '}
+                              {lead.brands.slice(0, 5).join(', ')}{lead.brands.length > 5 ? ` и ещё ${lead.brands.length - 5}` : ''}
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="td">
