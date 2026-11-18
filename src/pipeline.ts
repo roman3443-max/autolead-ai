@@ -298,7 +298,7 @@ async function extractWithGemini(companyName: string, domain: string, content: s
       const msg = String(err?.message || err)
       const isRetryable = msg.includes('503') || msg.includes('429') || msg.includes('aborted')
       if (!isRetryable || attempt === 3) {
-        console.log('  ⚠️ AI-извлечение не удалось (' + msg.slice(0, 80) + ')')
+        console.warn('  ⚠️ Gemini недоступен; продолжу без AI-извлечения: ' + msg.slice(0, 120))
         return null
       }
       console.log('  ⏳ AI занят, повтор ' + (attempt + 1) + '/3...')
@@ -357,7 +357,7 @@ function extractBrands(content: string, offeredBrands: string[] = []): string[] 
   const known = ['Toyota', 'Nissan', 'Honda', 'Mazda', 'Mitsubishi', 'Bosch', 'Denso', 'TRW', 'ZF', 'Continental', 'LADA', 'ВАЗ', 'ГАЗ', 'УАЗ', 'КАМАЗ', 'Ford', 'Renault', 'Chevrolet']
   const candidates = [...new Set([...known, ...offeredBrands.filter(Boolean)])]
   const found = candidates.filter(b => content.toLowerCase().includes(b.toLowerCase()))
-  return found.length > 0 ? found.slice(0, 6) : ['Автозапчасти']
+  return found.slice(0, 6)
 }
 
 function extractAddress(content: string): string {
@@ -444,12 +444,13 @@ export async function searchCompanies(city: string, industry: string, limit: num
       lastError = error
       const msg = String(error?.message || error)
       const is429 = msg.includes('429') || msg.toLowerCase().includes('rate limit')
+      const isTransient = /\b(502|503|504)\b/i.test(msg) || /fetch failed|network|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|aborted/i.test(msg)
       console.error(`❌ Ошибка Tavily (попытка ${attempt}/3):`, msg.slice(0, 120))
-      if (!is429 || attempt === 3) {
+      if ((!is429 && !isTransient) || attempt === 3) {
         // Прокидываем реальную причину — чтобы в UI была точная ошибка (ключ/квота), а не "не найдено"
         throw new Error(`Tavily: ${msg.slice(0, 200)}`)
       }
-      await new Promise(r => setTimeout(r, 4000 * attempt))
+      await new Promise(r => setTimeout(r, is429 ? 4000 * attempt : 1000 * attempt))
     }
   }
   throw lastError || new Error('Tavily: неизвестная ошибка')
