@@ -125,6 +125,7 @@ export default function App() {
 
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [searchTaskFilter, setSearchTaskFilter] = useState<{ id: string; name: string } | null>(null)
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null)
   const [leadEditMode, setLeadEditMode] = useState(false)
   const [leadEditDraft, setLeadEditDraft] = useState<any>(null)
@@ -712,6 +713,7 @@ export default function App() {
 
   // ---------- фильтр ----------
   const filteredLeads = useMemo(() => leads.filter(l => {
+    if (searchTaskFilter && l.search_task_id !== searchTaskFilter.id) return false
     if (statusFilter !== 'all' && l.status !== statusFilter) return false
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase()
@@ -725,7 +727,7 @@ export default function App() {
       (l.lpr_emails || []).some(e => e.toLowerCase().includes(q)) ||
       (l.brands || []).some(b => b.toLowerCase().includes(q))
     )
-  }), [leads, searchQuery, statusFilter])
+  }), [leads, searchQuery, statusFilter, searchTaskFilter])
 
   const TITLES: Record<TabId, string> = {
     search: 'Поиск лидов', table: 'Работа с лидами', map: 'Карта и сектора',
@@ -781,7 +783,12 @@ export default function App() {
             onRunTask={handleRunTask}
             onEditTask={(t) => setTaskForm({ ...t, scoring: t.scoring || null })}
             onDeleteTask={handleDeleteTask}
-            onGoLeads={() => setActiveTab('table')}
+            onGoLeads={(task) => {
+              setSearchTaskFilter({ id: task.id, name: task.name })
+              setSearchQuery('')
+              setStatusFilter('all')
+              setActiveTab('table')
+            }}
             onOpenSettings={openSettings}
           />
         )}
@@ -794,6 +801,8 @@ export default function App() {
             statusFilter={statusFilter}
             setStatusFilter={setStatusFilter}
             filteredLeads={filteredLeads}
+            searchTaskFilter={searchTaskFilter}
+            onClearSearchTaskFilter={() => setSearchTaskFilter(null)}
             onOpenLead={handleOpenLead}
             onCopyLetter={handleCopyLetter}
             onDownloadPDF={handleDownloadPDF}
