@@ -847,6 +847,7 @@ async function launchPipelineJob(params: {
           const savedLead = {
             ...lead,
             ...source,
+            source_type: 'search',
             id: `lead_${Date.now()}_${addedCount}`,
             status: 'new',
             pdf_file: null,
