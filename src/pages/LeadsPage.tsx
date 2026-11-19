@@ -340,8 +340,12 @@ export default function LeadsPage(p: Props) {
                       <td className="td cursor-pointer" onClick={() => p.onOpenLead(lead)}>
                         <div className="font-semibold text-slate-100 hover:text-indigo-300 transition-colors">{lead.company_name}</div>
                         <div className="text-[12px] text-slate-500 mt-0.5">{lead.domain}</div>
+                        {lead.source_url && <a href={lead.source_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="block text-[11px] text-cyan-400 hover:text-cyan-300 mt-1 underline underline-offset-2">Источник поиска{lead.source_provider ? ` · ${lead.source_provider}` : ''}</a>}
                         <div className="flex gap-1.5 mt-1.5 flex-wrap">
                           {lead.industry && <span className='chip bg-indigo-500/10 text-indigo-300'>{lead.industry}</span>}
+                          {lead.qualification_status === 'qualified'
+                            ? <span className="chip bg-emerald-500/10 text-emerald-300">Профиль подтверждён</span>
+                            : lead.source_type === 'search' && <span className="chip bg-amber-500/10 text-amber-300">Проверить профиль</span>}
                           {lead.business_size && lead.business_size !== 'unknown' && (
                             <span className="chip bg-sky-500/10 text-sky-300">{SIZE_LABELS[lead.business_size]}</span>
                           )}
