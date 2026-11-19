@@ -417,11 +417,18 @@ export async function searchCompanies(city: string, industry: string, limit: num
   console.log(`🔍 Поиск компаний: ${city}, ${industry}`)
 
   const query = `${industry} ${city} компания оптом официальный сайт`
+  const shortQuery = `${industry} ${city} компании`
   let lastError: any = null
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Tavily SDK по умолчанию ждёт до 60 секунд. Ограничиваем одну попытку,
+  // чтобы задача не зависала на минуту на каждом запросе.
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const response = await tvly.search(query, { searchDepth: 'basic', maxResults: limit })
+      const response = await tvly.search(attempt === 1 ? query : shortQuery, {
+        searchDepth: 'basic',
+        maxResults: limit,
+        timeout: 25
+      })
       const raw = response.results || []
       const filtered = raw.filter((result: any) => {
         try {
@@ -444,16 +451,53 @@ export async function searchCompanies(city: string, industry: string, limit: num
       lastError = error
       const msg = String(error?.message || error)
       const is429 = msg.includes('429') || msg.toLowerCase().includes('rate limit')
-      const isTransient = /\b(502|503|504)\b/i.test(msg) || /fetch failed|network|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|aborted/i.test(msg)
-      console.error(`❌ Ошибка Tavily (попытка ${attempt}/3):`, msg.slice(0, 120))
-      if ((!is429 && !isTransient) || attempt === 3) {
-        // Прокидываем реальную причину — чтобы в UI была точная ошибка (ключ/квота), а не "не найдено"
-        throw new Error(`Tavily: ${msg.slice(0, 200)}`)
+      const isTransient = /\b(502|503|504)\b/i.test(msg) || /timed?\s*out|timeout|fetch failed|network|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|aborted/i.test(msg)
+      console.error(`❌ Ошибка Tavily (попытка ${attempt}/2):`, msg.slice(0, 120))
+      if (!is429 && !isTransient) {
+        break
       }
-      await new Promise(r => setTimeout(r, is429 ? 4000 * attempt : 1000 * attempt))
+      if (attempt < 2) await new Promise(r => setTimeout(r, is429 ? 2500 : 1000))
     }
   }
-  throw lastError || new Error('Tavily: неизвестная ошибка')
+
+  // Если Tavily недоступен/завис, используем поиск Firecrawl как резервный источник.
+  // Это сохраняет основной сценарий поиска, если в проекте настроен FIRECRAWL_API_KEY.
+  if (process.env.FIRECRAWL_API_KEY) {
+    try {
+      console.warn('⚠️ Tavily не ответил; пробуем резервный поиск Firecrawl')
+      const response = await firecrawlApp.search(shortQuery, {
+        limit,
+        timeout: 30000,
+        lang: 'ru',
+        country: 'ru'
+      })
+      if (response.success) {
+        const companies = (response.data || []).flatMap((result: any) => {
+          const url = result.url || result.metadata?.sourceURL
+          if (!url) return []
+          try {
+            const parsed = new URL(url)
+            if (isExcludedDomain(parsed.hostname.toLowerCase())) return []
+            return [{
+              company_name: result.title || result.metadata?.title || 'Неизвестная компания',
+              domain: parsed.hostname.replace(/^www\./, ''),
+              url,
+              snippet: result.markdown || result.description || result.metadata?.description || ''
+            }]
+          } catch { return [] }
+        })
+        console.log(`✅ Firecrawl нашёл ${companies.length} компаний (резервный поиск)`)
+        return companies
+      }
+      throw new Error(response.error || 'Firecrawl вернул неуспешный ответ')
+    } catch (fallbackError: any) {
+      const fallbackMessage = String(fallbackError?.message || fallbackError).slice(0, 180)
+      const tavilyMessage = String(lastError?.message || lastError || 'неизвестная ошибка').slice(0, 180)
+      throw new Error(`Поиск не выполнен: Tavily — ${tavilyMessage}; Firecrawl — ${fallbackMessage}`)
+    }
+  }
+
+  throw new Error(`Tavily: ${String(lastError?.message || lastError || 'неизвестная ошибка').slice(0, 200)}. Проверьте TAVILY_API_KEY и доступ к API.`)
 }
 
 // --- Этап 2: Обогащение данных через Firecrawl ---
