@@ -361,6 +361,8 @@ export default function MapPage({ leads, sectors, managers, onGeocodeMissing, on
                 <b>{lead.company_name}</b><br />
                 {lead.city}{lead.industry ? ` · ${lead.industry}` : ''}<br />
                 {lead.address && <>{lead.address}<br /></>}
+                {lead.qualification_status !== 'qualified' && <>Профиль: требуется проверка<br /></>}
+                {lead.source_url && <><a href={lead.source_url} target="_blank" rel="noreferrer">Источник поиска{lead.source_provider ? ` · ${lead.source_provider}` : ''}</a><br /></>}
                 {lead.phone && <>Телефон: {lead.phone}<br /></>}
                 {lead.lpr?.[0]?.name && <>Контакт: {lead.lpr[0].name}{lead.lpr[0].position ? ` · ${lead.lpr[0].position}` : ''}<br /></>}
                 {lead.lpr_emails?.[0] && <>Email: {lead.lpr_emails[0]}<br /></>}
