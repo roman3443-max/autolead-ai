@@ -895,8 +895,22 @@ export default function App() {
               <div className="col-span-2 sm:col-span-3">
                 <div className="label">Источник</div>
                 <div className="text-sm text-slate-200">{selectedLead.search_task_name || 'Ручной импорт'}</div>
+                {selectedLead.source_url && <a href={selectedLead.source_url} target="_blank" rel="noreferrer" className="text-xs text-cyan-300 hover:text-cyan-200 underline underline-offset-2">Открыть источник поиска{selectedLead.source_provider ? ` · ${selectedLead.source_provider}` : ''}</a>}
+                {selectedLead.source_snippet && <div className="text-xs text-slate-400 mt-2 line-clamp-3">{selectedLead.source_snippet}</div>}
               </div>
             </div>
+
+            {selectedLead.source_type === 'search' && (
+              <div className={`rounded-xl border px-4 py-3 ${selectedLead.qualification_status === 'qualified' ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'}`}>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-2">
+                  {selectedLead.qualification_status === 'qualified' ? 'Профиль подтверждён по источнику' : 'Нужно проверить соответствие профилю'}
+                </div>
+                {selectedLead.industry_evidence && <div className="text-xs text-slate-300">Отрасль: «{selectedLead.industry_evidence}»</div>}
+                {selectedLead.city_evidence && <div className="text-xs text-slate-300 mt-1">Город: «{selectedLead.city_evidence}»</div>}
+                {selectedLead.customer_role && <div className="text-xs text-slate-300 mt-1">Роль: {selectedLead.customer_role === 'buyer' ? 'покупатель' : selectedLead.customer_role === 'supplier' ? 'поставщик' : selectedLead.customer_role === 'competitor' ? 'конкурент' : selectedLead.customer_role === 'other' ? 'другая' : 'не установлена'}{selectedLead.customer_role_evidence ? ` · «${selectedLead.customer_role_evidence}»` : ''}</div>}
+                {!selectedLead.industry_evidence && !selectedLead.city_evidence && !selectedLead.customer_role_evidence && <div className="text-xs text-slate-400">LLM не подтвердила отрасль, город и роль точными цитатами; высокий скор не присвоен.</div>}
+              </div>
+            )}
 
             {selectedLead.reason && (
               <div className="rounded-xl border-l-2 border-indigo-500 bg-indigo-500/5 px-4 py-3">
