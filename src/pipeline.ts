@@ -157,6 +157,16 @@ interface LeadData {
   company_name: string
   domain: string
   city: string
+  industry: string
+  source_provider?: 'Tavily' | 'Firecrawl'
+  source_url?: string
+  source_title?: string
+  source_snippet?: string
+  qualification_status?: 'qualified' | 'needs_review'
+  industry_evidence?: string
+  city_evidence?: string
+  customer_role?: 'buyer' | 'supplier' | 'competitor' | 'other' | 'unknown'
+  customer_role_evidence?: string
   address?: string
   coordinates?: { lat: number; lng: number }
   coordinate_source?: 'nominatim'
@@ -223,8 +233,17 @@ export async function getCoordinates(companyName: string, city: string, useGeoco
   if (cached?.source === 'nominatim') return cached
   if (!useGeocode) return undefined
 
-  const query = [address, companyName, city].filter(Boolean).join(', ')
-  const result = await nominatimGeocode(query)
+  // Сначала ищем по адресу организации в городе, и только затем — по названию.
+  // Совместная строка "адрес + компания" часто даёт плохие/пустые совпадения.
+  const queries = [
+    address ? [address, city, 'Россия'].filter(Boolean).join(', ') : '',
+    companyName ? [companyName, city, 'Россия'].filter(Boolean).join(', ') : ''
+  ].filter((query, index, all) => Boolean(query) && all.indexOf(query) === index)
+  let result: { lat: number; lng: number } | null = null
+  for (const query of queries) {
+    result = await nominatimGeocode(query)
+    if (result) break
+  }
   if (!result) return undefined
 
   const coordinates = { ...result, source: 'nominatim' as const }
@@ -250,35 +269,114 @@ function normalizeEvidence(value: string): string {
 
 interface AiExtraction {
   lpr: { name: string; position: string; evidence: string }[]
+  industry_match: 'yes' | 'no' | 'unknown'
+  industry_evidence: string
+  city_match: 'yes' | 'no' | 'unknown'
+  city_evidence: string
+  customer_role: 'buyer' | 'supplier' | 'competitor' | 'other' | 'unknown'
+  customer_role_evidence: string
   business_size: 'small' | 'medium' | 'large' | 'unknown'
   wholesale: boolean
   reason: string
 }
 
-async function extractWithGemini(companyName: string, domain: string, content: string): Promise<AiExtraction | null> {
-  if (!process.env.GEMINI_API_KEY) return null
-  const model = genAI.getGenerativeModel(
-    { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
-    { timeout: 60000 }
-  )
-  const prompt = 'Проанализируй текст сайта компании "' + companyName + '" (' + domain + ') и ответь СТРОГО в формате JSON:\n' +
-    '{\n  "lpr": [{"name": "Фамилия Имя", "position": "должность", "evidence": "точная цитата с сайта, содержащая имя"}],\n' +
+async function generateWithOpenRouter(prompt: string): Promise<string> {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  const model = process.env.OPENROUTER_MODEL
+  if (!apiKey || !model) throw new Error('Для резервного LLM задайте OPENROUTER_API_KEY и OPENROUTER_MODEL')
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000)
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://autolead-ai', 'X-Title': 'AutoLead AI' },
+      body: JSON.stringify({ model, temperature: 0, messages: [{ role: 'user', content: prompt }] }),
+      signal: controller.signal
+    })
+    const body: any = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(`OpenRouter ${response.status}: ${body?.error?.message || response.statusText}`)
+    const text = body?.choices?.[0]?.message?.content
+    if (typeof text !== 'string' || !text.trim()) throw new Error('OpenRouter вернул пустой ответ')
+    return text.trim()
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function extractWithLLM(companyName: string, domain: string, city: string, industry: string, content: string): Promise<AiExtraction | null> {
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY)
+  const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_MODEL)
+  if (!hasGemini && !hasOpenRouter) {
+    console.warn('  ⚠️ LLM не настроена: укажите GEMINI_API_KEY или OPENROUTER_API_KEY вместе с OPENROUTER_MODEL')
+    return null
+  }
+  const prompt = 'Оцени компанию как потенциального B2B-покупателя товаров поставщика. Целевой город: "' + city + '". Целевая отрасль/запрос: "' + industry + '". Компания: "' + companyName + '" (' + domain + '). Верни только JSON:\n' +
+    '{\n  "industry_match": "yes|no|unknown", "industry_evidence": "дословная цитата", "city_match": "yes|no|unknown", "city_evidence": "дословная цитата",\n' +
+    '  "customer_role": "buyer|supplier|competitor|other|unknown", "customer_role_evidence": "дословная цитата",\n' +
+    '  "lpr": [{"name": "Фамилия Имя", "position": "должность", "evidence": "точная цитата с сайта, содержащая имя"}],\n' +
     '  "business_size": "small|medium|large|unknown",\n  "wholesale": true/false,\n' +
     '  "reason": "одно предложение: почему этому лиду стоит продавать"\n}\n' +
     'Правила:\n' +
+    '- industry_match=yes только если сайт прямо подтверждает нужную деятельность; no только при явном противоречии; иначе unknown.\n' +
+    '- city_match=yes только если источник прямо подтверждает филиал/адрес в целевом городе; no только при явном другом городе; иначе unknown.\n' +
+    '- buyer — организация, которая использует/перепродаёт товары соответствующей категории; supplier/competitor — продаёт такую же категорию как поставщик/производитель; отличай их по источнику.\n' +
+    '- Все три поля evidence должны дословно встречаться в исходном тексте. Не придумывай доказательства; если роли нет в тексте — customer_role=unknown.\n' +
     '- lpr: до 2 людей, чьи имя и должность прямо подтверждаются текстом. Приведи точную цитату из текста без пересказа. Если цитаты нет — не включай человека.\n' +
     '- business_size: large — сеть/филиалы/50+ сотрудников/крупный склад; medium — 10-50 сотрудников, несколько точек; small — один магазин/СТО; unknown — непонятно.\n' +
     '- wholesale: true только при явных признаках опта в тексте (оптовые цены, "опт и розница", дистрибьютор, B2B).\n' +
     'Текст сайта (первые 8000 символов):\n"""\n' + content.slice(0, 8000) + '\n"""'
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const result = await model.generateContent(prompt)
-      const text = result.response.text().trim()
+  let lastError: any = null
+  const requestedProvider = process.env.AI_PROVIDER?.toLowerCase()
+  const preferred = requestedProvider === 'openrouter' ? 'openrouter' : 'gemini'
+  const providers = preferred === 'gemini' ? ['gemini', 'openrouter'] : ['openrouter', 'gemini']
+  for (const provider of providers) {
+    if (provider === 'gemini' && !hasGemini) continue
+    if (provider === 'openrouter' && !hasOpenRouter) continue
+    const attempts = provider === 'gemini' ? 2 : 1
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        let text: string
+        if (provider === 'gemini') {
+          const model = genAI.getGenerativeModel(
+            { model: process.env.GEMINI_MODEL || 'gemini-3.8-flash' },
+            { timeout: 20000 }
+          )
+          const result = await model.generateContent(prompt)
+          text = result.response.text().trim()
+        } else {
+          text = await generateWithOpenRouter(prompt)
+        }
+        return parseAiExtraction(text, content)
+      } catch (err: any) {
+        lastError = err
+        const msg = String(err?.message || err)
+        const isRetryable = /429|500|502|503|504|aborted|timed?\s*out|timeout|fetch failed|error fetching|network|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg)
+        if (provider === 'gemini' && isRetryable && attempt < attempts) {
+          console.log('  ⏳ Gemini временно недоступен, повтор 2/2...')
+          await new Promise(r => setTimeout(r, 1200))
+          continue
+        }
+        break
+      }
+    }
+  }
+  console.warn('  ⚠️ LLM недоступна; профиль лида будет помечен как требующий проверки: ' + String(lastError?.message || lastError || 'нет настроенного провайдера').slice(0, 160))
+  return null
+}
+
+function parseAiExtraction(text: string, content: string): AiExtraction {
       const jsonMatch = text.match(/\{[\s\S]*\}/)
       if (!jsonMatch) throw new Error('AI вернул не JSON')
       const parsed = JSON.parse(jsonMatch[0])
       const source = normalizeEvidence(content)
+      const validateQuote = (value: unknown) => {
+        const quote = String(value || '').trim()
+        return quote && source.includes(normalizeEvidence(quote)) ? quote : ''
+      }
+      const industry_evidence = validateQuote(parsed.industry_evidence)
+      const city_evidence = validateQuote(parsed.city_evidence)
+      const customer_role_evidence = validateQuote(parsed.customer_role_evidence)
       const lpr = Array.isArray(parsed.lpr) ? parsed.lpr.slice(0, 2).map((item: any) => ({
         name: String(item.name || '').trim(),
         position: String(item.position || 'Контактное лицо').trim(),
@@ -290,22 +388,16 @@ async function extractWithGemini(companyName: string, domain: string, content: s
       }) : []
       return {
         lpr,
+        industry_match: industry_evidence && ['yes', 'no'].includes(parsed.industry_match) ? parsed.industry_match : 'unknown',
+        industry_evidence,
+        city_match: city_evidence && ['yes', 'no'].includes(parsed.city_match) ? parsed.city_match : 'unknown',
+        city_evidence,
+        customer_role: customer_role_evidence && ['buyer', 'supplier', 'competitor', 'other'].includes(parsed.customer_role) ? parsed.customer_role : 'unknown',
+        customer_role_evidence,
         business_size: ['small', 'medium', 'large'].includes(parsed.business_size) ? parsed.business_size : 'unknown',
         wholesale: Boolean(parsed.wholesale),
         reason: String(parsed.reason || '').slice(0, 300)
       }
-    } catch (err: any) {
-      const msg = String(err?.message || err)
-      const isRetryable = msg.includes('503') || msg.includes('429') || msg.includes('aborted')
-      if (!isRetryable || attempt === 3) {
-        console.warn('  ⚠️ Gemini недоступен; продолжу без AI-извлечения: ' + msg.slice(0, 120))
-        return null
-      }
-      console.log('  ⏳ AI занят, повтор ' + (attempt + 1) + '/3...')
-      await new Promise(r => setTimeout(r, 8000))
-    }
-  }
-  return null
 }
 
 // --- Регэксп-извлечение ЛПР только при наличии имени и должности в тексте ---
@@ -416,8 +508,10 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
 export async function searchCompanies(city: string, industry: string, limit: number = 10) {
   console.log(`🔍 Поиск компаний: ${city}, ${industry}`)
 
-  const query = `${industry} ${city} компания оптом официальный сайт`
-  const shortQuery = `${industry} ${city} компании`
+  // Не добавляем «оптом»: это уводит выдачу к конкурентам и поставщикам,
+  // хотя менеджер часто ищет именно потенциальных покупателей.
+  const query = `${industry} ${city} официальный сайт организации`
+  const shortQuery = `${industry} ${city} компании адрес`
   let lastError: any = null
 
   // Tavily SDK по умолчанию ждёт до 60 секунд. Ограничиваем одну попытку,
@@ -443,7 +537,11 @@ export async function searchCompanies(city: string, industry: string, limit: num
         company_name: result.title || 'Неизвестная компания',
         domain: new URL(result.url).hostname.replace(/^www\./, ''),
         url: result.url,
-        snippet: result.content
+        snippet: result.content || '',
+        source_provider: 'Tavily' as const,
+        source_url: result.url,
+        source_title: result.title || '',
+        source_snippet: result.content || ''
       }))
       console.log(`✅ Найдено ${companies.length} компаний`)
       return companies
@@ -482,7 +580,11 @@ export async function searchCompanies(city: string, industry: string, limit: num
               company_name: result.title || result.metadata?.title || 'Неизвестная компания',
               domain: parsed.hostname.replace(/^www\./, ''),
               url,
-              snippet: result.markdown || result.description || result.metadata?.description || ''
+              snippet: result.markdown || result.description || result.metadata?.description || '',
+              source_provider: 'Firecrawl' as const,
+              source_url: url,
+              source_title: result.title || result.metadata?.title || '',
+              source_snippet: result.markdown || result.description || result.metadata?.description || ''
             }]
           } catch { return [] }
         })
@@ -501,7 +603,7 @@ export async function searchCompanies(city: string, industry: string, limit: num
 }
 
 // --- Этап 2: Обогащение данных через Firecrawl ---
-export async function enrichCompanyData(companies: any[], city: string, onProgress?: (processed: number, total: number) => void, options?: PipelineOptions) {
+export async function enrichCompanyData(companies: any[], city: string, industry: string, onProgress?: (processed: number, total: number) => void, options?: PipelineOptions) {
   console.log('🕷️ Обогащение данных...')
   const scoringCfg = loadScoringConfig(options?.scoring)
   const catalog = loadCatalog(options?.supplierCatalog)
@@ -524,11 +626,14 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const content = scrapeResult.markdown
 
       // Сначала пробуем AI-извлечение (если включено), при неудаче — регэкспы
-      const ai = useAI ? await extractWithGemini(company.company_name, company.domain, content) : null
+      const ai = useAI ? await extractWithLLM(company.company_name, company.domain, city, industry, content) : null
       const lpr = ai && ai.lpr.length > 0 ? ai.lpr : extractLPRRegex(content)
       const businessSize = ai ? ai.business_size : extractBusinessSizeRegex(content)
       const wholesale = ai ? ai.wholesale : hasWholesaleSignals(content)
       const reason = ai?.reason || ''
+      const qualificationStatus = ai?.industry_match === 'yes' && ai?.city_match === 'yes' && ai?.customer_role === 'buyer'
+        ? 'qualified'
+        : 'needs_review'
 
       // Email: только адреса из текста сайта; принадлежность ЛПР не предполагается.
       const siteEmails = extractEmails(content)
@@ -539,7 +644,7 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
       const matched_brands = getMatchedBrands(brands, catalog)
       const address = extractAddress(content)
       const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true, address)
-      const lead_score = calculateLeadScore(scoringCfg, {
+      const rawLeadScore = calculateLeadScore(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
         brandsCount: matched_brands.length,
@@ -547,6 +652,10 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         wholesale,
         contentLength: content.length
       })
+      // Высокий скор нельзя выдавать без подтверждения отрасли и присутствия в городе.
+      const lead_score = qualificationStatus === 'qualified'
+        ? rawLeadScore
+        : Math.min(rawLeadScore, Math.max(0, scoringCfg.tiers.b - 1))
       const lead_tier = getLeadTier(scoringCfg, lead_score)
       const matched_skus = matchCatalogItems(brands, catalog)
 
@@ -554,6 +663,16 @@ export async function enrichCompanyData(companies: any[], city: string, onProgre
         company_name: company.company_name,
         domain: company.domain,
         city,
+        industry,
+        source_provider: company.source_provider,
+        source_url: company.source_url || company.url,
+        source_title: company.source_title || company.company_name,
+        source_snippet: company.source_snippet || company.snippet || '',
+        qualification_status: qualificationStatus,
+        industry_evidence: ai?.industry_evidence || '',
+        city_evidence: ai?.city_evidence || '',
+        customer_role: ai?.customer_role || 'unknown',
+        customer_role_evidence: ai?.customer_role_evidence || '',
         address,
         coordinates: geocoding ? { lat: geocoding.lat, lng: geocoding.lng } : undefined,
         coordinate_source: geocoding?.source,
@@ -646,7 +765,7 @@ export async function runPipeline(
   onProgress?.('search', companies.length, limit)
   if (companies.length === 0) return []
 
-  const leads = await enrichCompanyData(companies, city, (p, t) => onProgress?.('enrich', p, t), options)
+  const leads = await enrichCompanyData(companies, city, industry, (p, t) => onProgress?.('enrich', p, t), options)
   if (companies.length > 0 && leads.length === 0) {
     // Компании нашлись, но ни один сайт не спарсился — почти всегда это проблема Firecrawl
     throw new Error(`Firecrawl: найдено ${companies.length} компаний, но ни один сайт не удалось спарсить. Проверьте FIRECRAWL_API_KEY и баланс кредитов.`)
