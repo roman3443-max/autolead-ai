@@ -7,6 +7,15 @@ export interface Lead {
   city: string
   address?: string
   industry?: string
+  source_provider?: 'Tavily' | 'Firecrawl'
+  source_url?: string
+  source_title?: string
+  source_snippet?: string
+  qualification_status?: 'qualified' | 'needs_review'
+  industry_evidence?: string
+  city_evidence?: string
+  customer_role?: 'buyer' | 'supplier' | 'competitor' | 'other' | 'unknown'
+  customer_role_evidence?: string
   phone?: string
   source_type?: 'import' | 'search'
   source_name?: string
