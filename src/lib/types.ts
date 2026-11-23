@@ -1,4 +1,5 @@
 export interface Lpr { name: string; position: string; evidence?: string }
+export interface SocialSource { provider: 'VK' | 'Telegram'; url: string; title: string; snippet?: string }
 
 export interface Lead {
   id: string
@@ -11,6 +12,7 @@ export interface Lead {
   source_url?: string
   source_title?: string
   source_snippet?: string
+  social_sources?: SocialSource[]
   requested_city?: string
   qualification_status?: 'qualified' | 'needs_review' | 'not_qualified'
   llm_status?: 'ok' | 'unavailable' | 'disabled'
