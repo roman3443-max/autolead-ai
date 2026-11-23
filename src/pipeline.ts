@@ -516,8 +516,8 @@ function calculateScoreBreakdown(cfg: ScoringConfig, input: {
     { key: 'lpr', label: 'ЛПР', points: input.lprCount > 0 ? w.lpr : 0, detail: input.lprCount > 0 ? `Найдено: ${input.lprCount}` : 'Не найдено' },
     { key: 'emails', label: 'Email сайта', points: input.emailsCount > 0 ? w.emails : 0, detail: input.emailsCount > 0 ? `Найдено адресов: ${input.emailsCount}` : 'Не найдено' },
     { key: 'brands', label: 'Совпадение брендов', points: brandPoints, detail: input.brandsCount > 0 ? `Совпало с каталогом: ${input.brandsCount}` : 'Совпадений с каталогом нет' },
-    { key: 'businessSize', label: 'Размер бизнеса', points: sizePoints, detail: input.businessSize === 'unknown' ? 'Размер не определён' : input.businessSize },
-    { key: 'wholesale', label: 'Оптовый профиль', points: input.wholesale ? w.wholesale : -cfg.retailPenalty, detail: input.wholesale ? 'Оптовый профиль подтверждён' : 'Опт не подтверждён; применён штраф за розницу' },
+    { key: 'businessSize', label: 'Размер бизнеса', points: sizePoints, detail: input.businessSize === 'large' ? 'Крупный бизнес' : input.businessSize === 'medium' ? 'Средний бизнес' : input.businessSize === 'small' ? 'Малый бизнес' : 'Размер не определён' },
+    { key: 'wholesale', label: 'Оптовый профиль', points: input.wholesale ? w.wholesale : -cfg.retailPenalty, detail: input.wholesale ? 'Оптовый профиль подтверждён' : 'Оптовый профиль не подтверждён; применён штраф' },
     { key: 'content', label: 'Содержимое сайта', points: contentPoints, detail: input.contentLength > 1500 ? 'Достаточно данных для анализа' : input.contentLength > 500 ? 'Неполные данные' : 'Мало данных на странице' },
   ]
   const total = Math.max(0, Math.min(factors.reduce((sum, factor) => sum + factor.points, 0), 100))
