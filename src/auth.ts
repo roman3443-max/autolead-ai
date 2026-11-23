@@ -1,5 +1,20 @@
 import jwt from 'jsonwebtoken'
 import { db, initDb, dbMode } from './db/index.ts'
+import { createRateLimiter } from './lib/rateLimit.ts'
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+export const loginIpRateLimit = createRateLimiter({
+  windowMs: LOGIN_WINDOW_MS,
+  max: 30,
+  keyGenerator: (req) => String(req.ip || req.socket?.remoteAddress || 'unknown'),
+  message: 'Слишком много попыток входа. Попробуйте позже.'
+})
+export const loginCredentialRateLimit = createRateLimiter({
+  windowMs: LOGIN_WINDOW_MS,
+  max: 8,
+  keyGenerator: (req) => `${String(req.ip || req.socket?.remoteAddress || 'unknown')}:${String(req.body?.email || '').trim().toLowerCase()}`,
+  message: 'Слишком много попыток входа для этой учётной записи. Попробуйте позже.'
+})
 
 function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET?.trim() || ''

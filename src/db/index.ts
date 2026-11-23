@@ -1,5 +1,4 @@
 // Унифицированный слой данных: PostgreSQL (Supabase) / pg-mem (тесты) / JSON-fallback.
-// Когда DATABASE_URL не задан — работаем на старых JSON-файлах (режим совместимости).
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -56,6 +55,7 @@ async function runSchema() {
 export async function initDb(): Promise<'pg' | 'json'> {
   const url = process.env.DATABASE_URL || ''
 
+  if (url === 'pgmem://test' && process.env.NODE_ENV !== 'test') throw new Error('pgmem разрешён только при NODE_ENV=test')
   if (url === 'pgmem://test') {
     const { newDb } = await import('pg-mem')
     pgmemDb = newDb()
@@ -65,7 +65,6 @@ export async function initDb(): Promise<'pg' | 'json'> {
     exec = async (sql, params) => (await pgClient.query(sql, params)).rows
     await runSchema()
     mode = 'pg'
-    await seedFromJsonIfEmpty()
     await seedAdminIfEmpty()
     return mode
   }
@@ -74,7 +73,7 @@ export async function initDb(): Promise<'pg' | 'json'> {
     const { Pool } = await import('pg')
     pgPool = new Pool({
       connectionString: url,
-      ssl: url.includes('supabase') ? { rejectUnauthorized: false } : undefined,
+      ssl: url.includes('supabase') ? { rejectUnauthorized: true } : undefined,
       keepAlive: true
     })
     const RETRYABLE = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EPIPE']
@@ -90,9 +89,14 @@ export async function initDb(): Promise<'pg' | 'json'> {
     }
     await runSchema()
     mode = 'pg'
-    await seedFromJsonIfEmpty()
+    await seedLegacyJsonOnceIfRequested()
     await seedAdminIfEmpty()
     return mode
+  }
+
+  const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME)
+  if (isProduction) {
+    throw new Error('DATABASE_URL обязательна в production. JSON-хранилище разрешено только для локальной разработки.')
   }
 
   mode = 'json'
@@ -108,17 +112,30 @@ export async function closeDb() {
   if (pgmemDb) pgmemDb.close && pgmemDb.close()
 }
 
-// ---------- seed ----------
-// Все вставки — идемпотентные (ON CONFLICT), поэтому сид можно безопасно
-// запускать при каждом старте: дорисует недостающее после обрывов/рестартов.
-async function seedFromJsonIfEmpty() {
+// ---------- explicit one-time legacy import ----------
+const LEGACY_IMPORT_MARKER = 'migration:legacy-json-import:v1'
+
+async function seedLegacyJsonOnceIfRequested() {
+  if (process.env.IMPORT_JSON_SEED !== 'true') return
+
+  const marker = await exec!('SELECT key FROM settings WHERE key = $1', [LEGACY_IMPORT_MARKER])
+  if (marker.length) return
+
+  // Import is opt-in and insert-only. Existing IDs/settings are never updated;
+  // this marker prevents deleted legacy rows from being re-created on later boots.
+  await seedLegacyJson()
+  await exec!('INSERT INTO settings (key, data) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING', [LEGACY_IMPORT_MARKER, JSON.stringify({ imported_at: new Date().toISOString() })])
+  console.log('📦 Одноразовый импорт JSON-данных завершён; удалите IMPORT_JSON_SEED из окружения.')
+}
+
+async function seedLegacyJson() {
   if (fs.existsSync(path.join(rootDir, 'leads_db.json'))) {
     const leads = jsonStore.read('leads_db.json', [])
-    for (const l of leads) await insertLead(l)
+    for (const l of leads) await insertLead(l, false)
   }
   if (fs.existsSync(path.join(rootDir, 'search_tasks.json'))) {
     const tasks = jsonStore.read('search_tasks.json', [])
-    for (const t of tasks) await insertTask(t)
+    for (const t of tasks) await insertTask(t, false)
   }
   if (fs.existsSync(path.join(rootDir, 'managers.json'))) {
     const m = jsonStore.read('managers.json', [])
@@ -187,6 +204,7 @@ async function seedUsersJsonIfEmpty() {
 function normalizeLead(l: any) {
   return {
     ...l.data,
+    revision: Number(l.revision || 0),
     id: l.id,
     status: l.status ?? l.data?.status,
     lead_tier: l.lead_tier ?? l.data?.lead_tier,
@@ -194,28 +212,40 @@ function normalizeLead(l: any) {
   }
 }
 
-async function insertLead(lead: any) {
+async function insertLead(lead: any, updateOnConflict = true) {
+  const conflictClause = updateOnConflict
+    ? 'DO UPDATE SET domain=$2, status=$3, lead_tier=$4, lead_score=$5, search_task_id=$6, sector_id=$7, assigned_manager_id=$8, data=$9'
+    : 'DO NOTHING'
   await exec!(
     `INSERT INTO leads (id, domain, status, lead_tier, lead_score, search_task_id, sector_id, assigned_manager_id, data)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     ON CONFLICT (id) DO UPDATE SET domain=$2, status=$3, lead_tier=$4, lead_score=$5,
-       search_task_id=$6, sector_id=$7, assigned_manager_id=$8, data=$9`,
+     ON CONFLICT (id) ${conflictClause}`,
     [lead.id, lead.domain || null, lead.status || 'new', lead.lead_tier || null,
      lead.lead_score || 0, lead.search_task_id || null, lead.sector_id || null,
      lead.assigned_manager_id || null, JSON.stringify(lead)]
   )
 }
 
-async function insertTask(task: any) {
+async function insertTask(task: any, updateOnConflict = true) {
+  const conflictClause = updateOnConflict ? 'DO UPDATE SET status=$2, data=$3' : 'DO NOTHING'
   await exec!(
     `INSERT INTO search_tasks (id, status, data) VALUES ($1,$2,$3)
-     ON CONFLICT (id) DO UPDATE SET status=$2, data=$3`,
+     ON CONFLICT (id) ${conflictClause}`,
     [task.id, task.status || 'draft', JSON.stringify(task)]
   )
 }
 
 // ---------- public API ----------
 export const db = {
+  async ping(): Promise<boolean> {
+    if (mode === 'json') return !((process.env.NODE_ENV === 'production') || process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME)
+    try {
+      await exec!('SELECT 1')
+      return true
+    } catch {
+      return false
+    }
+  },
   leads: {
     async list(): Promise<any[]> {
       if (mode === 'json') return jsonStore.read('leads_db.json', [])
@@ -236,20 +266,29 @@ export const db = {
       }
       await insertLead(lead)
     },
-    async update(id: string, patch: any): Promise<any | null> {
+    async update(id: string, patch: any, expectedRevision?: number): Promise<any | null> {
       if (mode === 'json') {
         const all = jsonStore.read('leads_db.json', [])
-        const idx = all.findIndex((l: any) => l.id === id)
-        if (idx === -1) return null
-        all[idx] = { ...all[idx], ...patch }
+        const idx = all.findIndex((lead: any) => lead.id === id)
+        if (idx < 0) return null
+        const revision = Number(all[idx].revision || 0)
+        if (expectedRevision !== undefined && expectedRevision !== revision) return null
+        all[idx] = { ...all[idx], ...patch, revision: revision + 1 }
         jsonStore.write('leads_db.json', all)
         return all[idx]
       }
-      const cur = await db.leads.get(id)
-      if (!cur) return null
-      const next = { ...cur, ...patch }
-      await insertLead(next)
-      return next
+      const changes = Object.fromEntries(Object.entries(patch).map(([k,v]) => [k,v ?? null]))
+      const columns = ['domain','status','lead_tier','lead_score','search_task_id','sector_id','assigned_manager_id']
+      const params: any[] = [id, JSON.stringify(changes), expectedRevision ?? null]
+      const assignments = ['data = data || $2::jsonb', 'revision = revision + 1']
+      for (const column of columns) {
+        if (!Object.hasOwnProperty.call(changes, column)) continue
+        params.push(changes[column])
+        assignments.push(column + ' = $' + params.length)
+      }
+      const rows = await exec!(`UPDATE leads SET ${assignments.join(', ')}
+        WHERE id=$1 AND ($3::bigint IS NULL OR revision=$3) RETURNING *`, params)
+      return rows.length ? normalizeLead(rows[0]) : null
     },
     async remove(id: string): Promise<boolean> {
       if (mode === 'json') {
@@ -392,7 +431,7 @@ export const db = {
       let rows: any[]
       if (mode === 'json') {
         const all = jsonStore.read('jobs_db.json', [])
-        rows = all.filter((job: any) => job.status === 'running' && job.id !== exceptJobId && job.id !== jsonPipelineLock)
+        rows = all.filter((job: any) => job.status === 'running' && job.kind !== 'recheck' && job.id !== exceptJobId && job.id !== jsonPipelineLock)
         for (const row of rows) {
           const next = { ...row, status: 'error', error: 'Прервано остановкой или перезапуском сервера' }
           const index = all.findIndex((job: any) => job.id === row.id)
@@ -411,6 +450,7 @@ export const db = {
         `SELECT j.id, j.data
          FROM jobs j
          WHERE j.status = 'running'
+           AND COALESCE(j.data->>'kind', '') <> 'recheck'
            AND ($1::text IS NULL OR j.id <> $1)
            AND NOT EXISTS (
              SELECT 1 FROM pipeline_locks l
@@ -430,6 +470,44 @@ export const db = {
           })
         }
       }
+      return rows.length
+    },
+    async reserveRecheck(jobId: string, leadId: string, capacity: number) {
+      if (!pgPool) return async () => {}
+      // Session locks expire automatically when a worker disconnects.
+      const client = await pgPool.connect()
+      const lock = async (group: number, key: string) =>
+        (await client.query('SELECT pg_try_advisory_lock($1::int,hashtext($2)) AS ok', [group,key])).rows[0].ok
+      // Destroy this dedicated connection to release exactly its locks.
+      const release = async () => { client.release(true) }
+      try {
+        if (await lock(101,leadId) && await lock(102,jobId)) {
+          for (let slot=0; slot<capacity; slot++) {
+            if (await lock(103,String(slot))) return release
+          }
+        }
+        await release()
+        return null
+      } catch (error) { await release(); throw error }
+    },
+    async markOrphanedRechecksAsError(): Promise<number> {
+      if (mode === 'json') {
+        const all = jsonStore.read('jobs_db.json', [])
+        let count = 0
+        for (const job of all) {
+          if (job.status === 'running' && job.kind === 'recheck') {
+            job.status = 'error'
+            job.error = 'Перепроверка прервана перезапуском сервера; запустите её снова'
+            count++
+          }
+        }
+        if (count) jsonStore.write('jobs_db.json', all)
+        return count
+      }
+      const rows = await exec!(`UPDATE jobs SET status='error',
+        data=data || $1::jsonb WHERE status='running' AND data->>'kind'='recheck'
+        AND pg_try_advisory_xact_lock(102,hashtext(id)) RETURNING id`,
+        [JSON.stringify({status:'error',error:'Перепроверка прервана перезапуском сервера'})])
       return rows.length
     },
   },

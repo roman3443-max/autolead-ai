@@ -1,5 +1,5 @@
 import { tavily } from '@tavily/core'
-import FirecrawlApp from '@mendable/firecrawl-js'
+import { FirecrawlAppV1 } from '@mendable/firecrawl-js'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import fs from 'fs'
 import path from 'path'
@@ -18,7 +18,7 @@ if (fs.existsSync(envPath)) {
 
 // Инициализация API (ключи берутся из .env / переменных окружения)
 const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY || '' })
-const firecrawlApp = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY || '' })
+const firecrawlApp = new FirecrawlAppV1({ apiKey: process.env.FIRECRAWL_API_KEY || '' })
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '')
 
 const rootDir = process.cwd()
