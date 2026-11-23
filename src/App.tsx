@@ -410,9 +410,24 @@ export default function App() {
       const res = await apiFetch(`${API_URL}/api/leads/${lead.id}/recheck`, { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) { toast(data.error || 'Не удалось повторно проверить лид', 'error'); return }
-      if (selectedLead?.id === lead.id) setSelectedLead(data)
+      if (!data.jobId) { toast('Сервер не вернул задачу перепроверки', 'error'); return }
+      toast('Перепроверка поставлена в очередь. Можно подождать результат в этой карточке.', 'info')
+      const deadline = Date.now() + 15 * 60 * 1000
+      let completed: any = null
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        const statusResponse = await apiFetch(`${API_URL}/api/pipeline-status/${data.jobId}`)
+        if (!statusResponse.ok) continue
+        const job = await statusResponse.json()
+        if (job.status === 'done' || job.status === 'error') { completed = job; break }
+      }
+      if (!completed) { toast('Перепроверка ещё выполняется. Обновите карточку через минуту.', 'info'); return }
+      if (completed.status === 'error') { toast(completed.error || 'Не удалось повторно проверить лид', 'error'); return }
+      const refreshed = await apiFetch(`${API_URL}/api/leads`)
+      const refreshedLeads: Lead[] = refreshed.ok ? await refreshed.json() : []
+      if (selectedLead?.id === lead.id) setSelectedLead(refreshedLeads.find(item => item.id === lead.id) || null)
       await loadData()
-      toast(data.llm_status === 'ok' ? 'Сайт повторно проверен: цитаты и статус LLM обновлены' : 'Данные сайта обновлены, но LLM недоступна', data.llm_status === 'ok' ? 'success' : 'error')
+      toast(completed.llm_status === 'ok' ? 'Сайт повторно проверен: цитаты и статус LLM обновлены' : 'Сайт обновлён, но LLM не подтвердила данные', completed.llm_status === 'ok' ? 'success' : 'error')
     } catch { toast('Ошибка соединения с сервером', 'error') }
     finally { setLeadRecheckBusy(false) }
   }

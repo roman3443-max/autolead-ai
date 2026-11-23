@@ -3,10 +3,12 @@ import cors from 'cors'
 import path from 'path'
 import { runPipeline, enrichCompanyData, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
-import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
+import { authMiddleware, loginHandler, loginIpRateLimit, loginCredentialRateLimit, requireAdmin, assertAuthConfig } from './src/auth.ts'
+import { createRateLimiter } from './src/lib/rateLimit.ts'
 
 const app = express()
-const PORT = process.env.PORT || 3001
+const PORT = Number.parseInt(process.env.PORT || '3001', 10) || 3001
+app.set('trust proxy', 1)
 
 // Разрешённые источники (CORS). Переопределяется переменной ALLOWED_ORIGINS через запятую
 const DEFAULT_ORIGINS = [
@@ -127,10 +129,26 @@ const kpFileName = (fileName: any): string | null => {
 
 // ---------- auth ----------
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true })
+  res.json({ ok: true, service: 'autolead-ai' })
 })
 
-app.post('/api/auth/login', loginHandler)
+app.get('/api/ready', async (req, res) => {
+  const databaseReady = await db.ping()
+  const integrations = {
+    tavily: Boolean(process.env.TAVILY_API_KEY),
+    firecrawl: Boolean(process.env.FIRECRAWL_API_KEY),
+    llm: Boolean(process.env.GEMINI_API_KEY || process.env.OPENROUTER_API_KEY),
+  }
+  const ready = databaseReady && dbMode() === 'pg' && Object.values(integrations).every(Boolean)
+  res.status(ready ? 200 : 503).json({
+    ready,
+    storage: dbMode(),
+    database: databaseReady ? 'connected' : 'unavailable',
+    integrations,
+  })
+})
+
+app.post('/api/auth/login', loginIpRateLimit, loginCredentialRateLimit, loginHandler)
 app.get('/api/auth/me', authMiddleware, (req: any, res) => res.json(req.user))
 app.use('/api', authMiddleware)
 
@@ -379,7 +397,16 @@ app.put('/api/leads/:id', async (req, res) => {
   res.json(updated)
 })
 
-app.post('/api/leads/:id/recheck', async (req, res) => {
+const recheckRateLimit = createRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  max: 1,
+  keyGenerator: req => `${String(req.user?.email || 'unknown')}:${String(req.params?.id || '')}`,
+  message: 'Этот лид уже недавно отправляли на перепроверку. Подождите несколько минут.'
+})
+const MAX_CONCURRENT_RECHECKS = Math.max(1, Math.min(4, Number.parseInt(process.env.MAX_CONCURRENT_RECHECKS || '2', 10) || 2))
+const activeRecheckJobs = new Set<string>()
+
+app.post('/api/leads/:id/recheck', recheckRateLimit, async (req: any, res) => {
   const lead = await db.leads.get(req.params.id)
   if (!lead) return res.status(404).json({ error: 'Лид не найден' })
   if (lead.source_type !== 'search') return res.status(409).json({ error: 'Повторная проверка доступна для лидов из поиска' })
@@ -389,10 +416,48 @@ app.post('/api/leads/:id/recheck', async (req, res) => {
   const industry = String(task?.industry || lead.industry || '').trim()
   if (!city || !industry) return res.status(422).json({ error: 'Не удалось определить город и отрасль исходного поиска' })
 
+  const runningForLead = Object.values(pipelineJobs).find((job: any) => job.kind === 'recheck' && job.lead_id === lead.id && job.status === 'running') as any
+  if (runningForLead) return res.status(202).json({ jobId: runningForLead.id, alreadyRunning: true })
+  if (activeRecheckJobs.size >= MAX_CONCURRENT_RECHECKS) {
+    res.setHeader('Retry-After', '60')
+    return res.status(429).json({ error: 'Сервис перепроверяет другие лиды. Попробуйте через минуту.' })
+  }
+
   const sourceUrl = String(lead.source_url || (lead.domain ? `https://${lead.domain}` : '')).trim()
+  let parsedUrl: URL
   try {
-    const parsedUrl = new URL(sourceUrl)
+    parsedUrl = new URL(sourceUrl)
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('invalid protocol')
+  } catch {
+    return res.status(422).json({ error: 'У лида нет корректного http/https адреса для перепроверки' })
+  }
+
+  const jobId = `recheck_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const job = {
+    id: jobId,
+    kind: 'recheck',
+    lead_id: lead.id,
+    owner_email: req.user?.email,
+    status: 'running',
+    stage: 'enrich',
+    processed: 0,
+    total: 1,
+    added: 0,
+    totalFound: 1,
+    message: 'Перепроверяем сайт и доказательства...',
+    startedAt: new Date().toISOString(),
+  }
+  try {
+    await db.jobs.create(job)
+  } catch (error) {
+    console.error('❌ Не удалось создать задачу перепроверки:', error)
+    return res.status(503).json({ error: 'Не удалось поставить перепроверку в очередь. Попробуйте позже.' })
+  }
+  pipelineJobs[jobId] = job
+  activeRecheckJobs.add(jobId)
+
+  void (async () => {
+    try {
     const supplier = (await db.settings.get('supplier_config')) || {}
     const globalScoring = (await db.settings.get('scoring_config')) || {}
     const catalog = getSupplierCatalog(supplier)
@@ -410,7 +475,7 @@ app.post('/api/leads/:id/recheck', async (req, res) => {
       scoring: globalScoring,
       supplierCatalog: catalog
     })
-    if (!result.length) return res.status(502).json({ error: 'Не удалось повторно загрузить страницу компании' })
+    if (!result.length) throw new Error('Не удалось повторно загрузить страницу компании')
 
     const fresh = result[0]
     const manualLpr = (Array.isArray(lead.lpr) ? lead.lpr : []).filter((person: any) => !person.evidence)
@@ -438,13 +503,19 @@ app.post('/api/leads/:id/recheck', async (req, res) => {
       assigned_manager_id: manualAssignment ? lead.assigned_manager_id : undefined,
       assignment_source: manualAssignment ? 'manual' : undefined
     })
-    if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+    if (!updated) throw new Error('Лид не найден')
     await assignLeadToKnownSector(updated)
-    res.json(await db.leads.get(lead.id))
-  } catch (error: any) {
-    console.error('❌ Повторная проверка лида завершилась ошибкой:', error)
-    res.status(500).json({ error: 'Не удалось повторно проверить лид. Проверьте доступность Firecrawl и LLM.' })
-  }
+    const freshLead = await db.leads.get(lead.id)
+    await updateJob(jobId, { status: 'done', stage: 'done', processed: 1, message: 'Перепроверка завершена', llm_status: freshLead?.llm_status || 'unknown' })
+    } catch (error: any) {
+      console.error('❌ Повторная проверка лида завершилась ошибкой:', error)
+      await updateJob(jobId, { status: 'error', error: 'Не удалось повторно проверить лид. Проверьте доступность Firecrawl и LLM.' })
+    } finally {
+      activeRecheckJobs.delete(jobId)
+    }
+  })()
+
+  res.status(202).json({ jobId })
 })
 
 app.post('/api/leads/:id/generate-kp', async (req, res) => {
@@ -737,7 +808,7 @@ app.get('/api/supplier-config', async (req, res) => {
   })
 })
 
-app.put('/api/supplier-config', async (req, res) => {
+app.put('/api/supplier-config', requireAdmin, async (req, res) => {
   const name = String(req.body?.name || '').trim()
   if (!name) return res.status(400).json({ error: 'Название компании обязательно' })
   const fields = ['contact', 'email', 'phone', 'website', 'inn', 'address', 'payment_terms', 'delivery', 'warranty', 'offer_validity', 'offer_text']
@@ -776,7 +847,7 @@ app.get('/api/scoring-config', async (req, res) => {
   })
 })
 
-app.put('/api/scoring-config', async (req, res) => {
+app.put('/api/scoring-config', requireAdmin, async (req, res) => {
   const b = req.body || {}
   const weights: any = {}
   for (const k of ['lpr', 'emails', 'brands', 'businessSize', 'wholesale', 'content']) {
@@ -1007,9 +1078,10 @@ app.post('/api/run-pipeline', runCooldown, async (req, res) => {
   res.json({ jobId: launched.jobId })
 })
 
-app.get('/api/pipeline-status/:jobId', async (req, res) => {
+app.get('/api/pipeline-status/:jobId', async (req: any, res) => {
   const job = pipelineJobs[req.params.jobId] || await db.jobs.get(req.params.jobId)
   if (!job) return res.status(404).json({ error: 'Задача не найдена' })
+  if (job.owner_email && job.owner_email !== req.user?.email) return res.status(404).json({ error: 'Задача не найдена' })
   res.json(job)
 })
 
@@ -1128,6 +1200,8 @@ async function main() {
   } catch { /* ignore */ }
 
   // Джобы, прерванные рестартом, помечаем ошибкой
+  const orphanedRechecks = await db.jobs.markOrphanedRechecksAsError()
+  if (orphanedRechecks) console.log(`⚠️ Перепроверок прервано перезапуском: ${orphanedRechecks}`)
   const stale = await db.jobs.markStaleRunningAsError()
   if (stale) console.log(`⚠️ Прервано рестартом: ${stale} задач пайплайна`)
 
