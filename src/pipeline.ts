@@ -162,11 +162,14 @@ interface LeadData {
   source_url?: string
   source_title?: string
   source_snippet?: string
-  qualification_status?: 'qualified' | 'needs_review'
+  qualification_status?: 'qualified' | 'needs_review' | 'not_qualified'
+  llm_status?: 'ok' | 'unavailable' | 'disabled'
   industry_evidence?: string
   city_evidence?: string
+  requested_city?: string
   customer_role?: 'buyer' | 'supplier' | 'competitor' | 'other' | 'unknown'
   customer_role_evidence?: string
+  address_evidence?: string
   address?: string
   coordinates?: { lat: number; lng: number }
   coordinate_source?: 'nominatim'
@@ -275,6 +278,8 @@ interface AiExtraction {
   city_evidence: string
   customer_role: 'buyer' | 'supplier' | 'competitor' | 'other' | 'unknown'
   customer_role_evidence: string
+  address: string
+  address_evidence: string
   business_size: 'small' | 'medium' | 'large' | 'unknown'
   wholesale: boolean
   reason: string
@@ -303,7 +308,7 @@ async function generateWithOpenRouter(prompt: string): Promise<string> {
   }
 }
 
-async function extractWithLLM(companyName: string, domain: string, city: string, industry: string, content: string): Promise<AiExtraction | null> {
+async function extractWithLLM(companyName: string, domain: string, city: string, industry: string, content: string, offeredItems: CatalogItem[]): Promise<AiExtraction | null> {
   const hasGemini = Boolean(process.env.GEMINI_API_KEY)
   const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_MODEL)
   if (!hasGemini && !hasOpenRouter) {
@@ -312,6 +317,7 @@ async function extractWithLLM(companyName: string, domain: string, city: string,
   }
   const prompt = 'Оцени компанию как потенциального B2B-покупателя товаров поставщика. Целевой город: "' + city + '". Целевая отрасль/запрос: "' + industry + '". Компания: "' + companyName + '" (' + domain + '). Верни только JSON:\n' +
     '{\n  "industry_match": "yes|no|unknown", "industry_evidence": "дословная цитата", "city_match": "yes|no|unknown", "city_evidence": "дословная цитата",\n' +
+    '  "address": "полный адрес или пустая строка", "address_evidence": "дословная цитата с адресом",\n' +
     '  "customer_role": "buyer|supplier|competitor|other|unknown", "customer_role_evidence": "дословная цитата",\n' +
     '  "lpr": [{"name": "Фамилия Имя", "position": "должность", "evidence": "точная цитата с сайта, содержащая имя"}],\n' +
     '  "business_size": "small|medium|large|unknown",\n  "wholesale": true/false,\n' +
@@ -319,8 +325,9 @@ async function extractWithLLM(companyName: string, domain: string, city: string,
     'Правила:\n' +
     '- industry_match=yes только если сайт прямо подтверждает нужную деятельность; no только при явном противоречии; иначе unknown.\n' +
     '- city_match=yes только если источник прямо подтверждает филиал/адрес в целевом городе; no только при явном другом городе; иначе unknown.\n' +
-    '- buyer — организация, которая использует/перепродаёт товары соответствующей категории; supplier/competitor — продаёт такую же категорию как поставщик/производитель; отличай их по источнику.\n' +
-    '- Все три поля evidence должны дословно встречаться в исходном тексте. Не придумывай доказательства; если роли нет в тексте — customer_role=unknown.\n' +
+    '- Каталог поставщика: ' + (offeredItems.slice(0, 25).map(item => `${item.brand} ${item.name} ${item.car}`.trim()).join('; ') || 'не задан') + '.\n' +
+    '- buyer — организация, которая покупает/использует/перепродаёт именно эти товары или их категорию. Одного совпадения отрасли недостаточно. Клиника не является покупателем автозапчастей. supplier/competitor — продавец или производитель той же категории.\n' +
+    '- customer_role_evidence должно отдельно подтверждать коммерческую роль и не повторять цитату об отрасли. Все evidence дословно должны встречаться в исходном тексте. Не придумывай доказательства; если роли нет — unknown.\n' +
     '- lpr: до 2 людей, чьи имя и должность прямо подтверждаются текстом. Приведи точную цитату из текста без пересказа. Если цитаты нет — не включай человека.\n' +
     '- business_size: large — сеть/филиалы/50+ сотрудников/крупный склад; medium — 10-50 сотрудников, несколько точек; small — один магазин/СТО; unknown — непонятно.\n' +
     '- wholesale: true только при явных признаках опта в тексте (оптовые цены, "опт и розница", дистрибьютор, B2B).\n' +
@@ -347,7 +354,7 @@ async function extractWithLLM(companyName: string, domain: string, city: string,
         } else {
           text = await generateWithOpenRouter(prompt)
         }
-        return parseAiExtraction(text, content)
+        return parseAiExtraction(text, content, city, industry)
       } catch (err: any) {
         lastError = err
         const msg = String(err?.message || err)
@@ -365,7 +372,7 @@ async function extractWithLLM(companyName: string, domain: string, city: string,
   return null
 }
 
-function parseAiExtraction(text: string, content: string): AiExtraction {
+function parseAiExtraction(text: string, content: string, city: string, industry: string): AiExtraction {
       const jsonMatch = text.match(/\{[\s\S]*\}/)
       if (!jsonMatch) throw new Error('AI вернул не JSON')
       const parsed = JSON.parse(jsonMatch[0])
@@ -377,6 +384,17 @@ function parseAiExtraction(text: string, content: string): AiExtraction {
       const industry_evidence = validateQuote(parsed.industry_evidence)
       const city_evidence = validateQuote(parsed.city_evidence)
       const customer_role_evidence = validateQuote(parsed.customer_role_evidence)
+      const address_evidence = validateQuote(parsed.address_evidence)
+      const addressValue = String(parsed.address || '').trim()
+      const address = addressValue && address_evidence && normalizeEvidence(address_evidence).includes(normalizeEvidence(addressValue)) ? addressValue.slice(0, 250) : ''
+      const hasTargetTerm = (evidence: string, target: string) => {
+        const normalizedEvidence = normalizeEvidence(evidence)
+        const tokens = normalizeEvidence(target).split(' ').filter(token => token.length >= 4)
+        return tokens.some(token => normalizedEvidence.includes(token.slice(0, Math.min(token.length, Math.max(3, token.length - 2)))))
+      }
+      const industryEvidenceSupportsTarget = hasTargetTerm(industry_evidence, industry)
+      const cityEvidenceSupportsTarget = hasTargetTerm(city_evidence, city)
+      const roleEvidenceIsDistinct = Boolean(customer_role_evidence && normalizeEvidence(customer_role_evidence) !== normalizeEvidence(industry_evidence))
       const lpr = Array.isArray(parsed.lpr) ? parsed.lpr.slice(0, 2).map((item: any) => ({
         name: String(item.name || '').trim(),
         position: String(item.position || 'Контактное лицо').trim(),
@@ -388,12 +406,14 @@ function parseAiExtraction(text: string, content: string): AiExtraction {
       }) : []
       return {
         lpr,
-        industry_match: industry_evidence && ['yes', 'no'].includes(parsed.industry_match) ? parsed.industry_match : 'unknown',
+        industry_match: industry_evidence && parsed.industry_match === 'no' ? 'no' : industryEvidenceSupportsTarget && parsed.industry_match === 'yes' ? 'yes' : 'unknown',
         industry_evidence,
-        city_match: city_evidence && ['yes', 'no'].includes(parsed.city_match) ? parsed.city_match : 'unknown',
+        city_match: city_evidence && parsed.city_match === 'no' ? 'no' : cityEvidenceSupportsTarget && parsed.city_match === 'yes' ? 'yes' : 'unknown',
         city_evidence,
-        customer_role: customer_role_evidence && ['buyer', 'supplier', 'competitor', 'other'].includes(parsed.customer_role) ? parsed.customer_role : 'unknown',
-        customer_role_evidence,
+        customer_role: roleEvidenceIsDistinct && ['buyer', 'supplier', 'competitor', 'other'].includes(parsed.customer_role) ? parsed.customer_role : 'unknown',
+        customer_role_evidence: roleEvidenceIsDistinct ? customer_role_evidence : '',
+        address,
+        address_evidence: address ? address_evidence : '',
         business_size: ['small', 'medium', 'large'].includes(parsed.business_size) ? parsed.business_size : 'unknown',
         wholesale: Boolean(parsed.wholesale),
         reason: String(parsed.reason || '').slice(0, 300)
@@ -427,29 +447,41 @@ function extractLPRRegex(content: string): { name: string; position: string; evi
   return found
 }
 
-function extractBusinessSizeRegex(content: string): 'small' | 'medium' | 'large' | 'unknown' {
-  const text = content.toLowerCase()
-  if (/сеть|филиал|(\d+)\s*(магазин|точк)|склад\s*\d+\s*(м²|м2|кв)|сотрудник[а-я]*\s*[:\-]?\s*([5-9]\d|\d{3,})/.test(text)) return 'large'
-  if (/сотрудник[а-я]*\s*[:\-]?\s*(1\d|[2-4]\d)|оптово-розничн|2\s*магазин|более 10/.test(text)) return 'medium'
-  if (/сотрудник[а-я]*\s*[:\-]?\s*\d|магазин|сто|шиномонтаж/.test(text)) return 'small'
-  return 'unknown'
-}
-
-function hasWholesaleSignals(content: string): boolean {
-  const text = content.toLowerCase()
-  return /опт(овая|ом|а\b)|оптово-розничн|дистрибьютор|b2b|дилер(ская|ам)?|партн(ер|ёр)/.test(text)
-}
-
 function extractEmails(content: string): string[] {
   const emails = content.match(/[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []
   return [...new Set(emails)].filter(e => !e.match(/\.(png|jpg|jpeg|gif|webp|svg)$/i)).slice(0, 5)
 }
 
+function inferVertical(value: string): 'automotive' | 'dental' | 'food' | 'unknown' {
+  const text = normalizeEvidence(value)
+  if (/стоматолог|дентал|зубн|ортодонт|имплант/.test(text)) return 'dental'
+  if (/автозапчаст|автомобил|автосервис|автомагазин|сто\b|шиномонтаж|двигател|тормозн|сцеплен/.test(text)) return 'automotive'
+  if (/снек|продукт|бакале|кондитер|напит|продоволь|пищев/.test(text)) return 'food'
+  return 'unknown'
+}
+
+function catalogVertical(catalog: SupplierCatalog): 'automotive' | 'dental' | 'food' | 'unknown' {
+  return inferVertical((catalog.items || []).map(item => `${item.brand} ${item.name} ${item.car}`).join(' '))
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function extractBrands(content: string, offeredBrands: string[] = []): string[] {
-  const known = ['Toyota', 'Nissan', 'Honda', 'Mazda', 'Mitsubishi', 'Bosch', 'Denso', 'TRW', 'ZF', 'Continental', 'LADA', 'ВАЗ', 'ГАЗ', 'УАЗ', 'КАМАЗ', 'Ford', 'Renault', 'Chevrolet']
-  const candidates = [...new Set([...known, ...offeredBrands.filter(Boolean)])]
-  const found = candidates.filter(b => content.toLowerCase().includes(b.toLowerCase()))
-  return found.slice(0, 6)
+  const text = content.toLocaleLowerCase('ru-RU')
+  const commercialContext = /(бренд|производител|каталог|ассортимент|товар|продукц|запчаст|артикул|купить|цена|в наличии|постав)/i
+  const found = offeredBrands.filter(brand => {
+    const safe = escapeRegExp(brand.toLocaleLowerCase('ru-RU'))
+    const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])${safe}(?=$|[^\\p{L}\\p{N}])`, 'giu')
+    for (const match of text.matchAll(pattern)) {
+      const at = match.index || 0
+      const context = text.slice(Math.max(0, at - 100), Math.min(text.length, at + brand.length + 100))
+      if (commercialContext.test(context)) return true
+    }
+    return false
+  })
+  return [...new Set(found)].slice(0, 6)
 }
 
 function extractAddress(content: string): string {
@@ -625,25 +657,34 @@ export async function enrichCompanyData(companies: any[], city: string, industry
 
       const content = scrapeResult.markdown
 
-      // Сначала пробуем AI-извлечение (если включено), при неудаче — регэкспы
-      const ai = useAI ? await extractWithLLM(company.company_name, company.domain, city, industry, content) : null
+      // Если LLM недоступна, эвристики не подтверждают профиль и лид не получает высокий скор.
+      const ai = useAI ? await extractWithLLM(company.company_name, company.domain, city, industry, content, catalog.items) : null
       const lpr = ai && ai.lpr.length > 0 ? ai.lpr : extractLPRRegex(content)
-      const businessSize = ai ? ai.business_size : extractBusinessSizeRegex(content)
-      const wholesale = ai ? ai.wholesale : hasWholesaleSignals(content)
-      const reason = ai?.reason || ''
-      const qualificationStatus = ai?.industry_match === 'yes' && ai?.city_match === 'yes' && ai?.customer_role === 'buyer'
-        ? 'qualified'
-        : 'needs_review'
+      const businessSize = ai && ai.industry_match === 'yes' && ai.city_match === 'yes' ? ai.business_size : 'unknown'
+      const wholesale = ai && ai.industry_match === 'yes' && ai.city_match === 'yes' ? ai.wholesale : false
+      const reason = ai?.industry_evidence && ai?.city_evidence && ai?.customer_role_evidence && ai?.customer_role === 'buyer'
+        ? `Профиль подтверждён цитатами сайта: отрасль — «${ai.industry_evidence}»; город — «${ai.city_evidence}»; роль покупателя — «${ai.customer_role_evidence}».`
+        : ''
+      const industryVertical = inferVertical(industry)
+      const supplierVertical = catalogVertical(catalog)
+      const catalogConflict = industryVertical !== 'unknown' && supplierVertical !== 'unknown' && industryVertical !== supplierVertical
+      const explicitMismatch = catalogConflict || ai?.industry_match === 'no' || ai?.city_match === 'no' || ['supplier', 'competitor', 'other'].includes(ai?.customer_role || '')
+      const qualificationStatus = explicitMismatch
+        ? 'not_qualified'
+        : ai?.industry_match === 'yes' && ai?.city_match === 'yes' && ai?.customer_role === 'buyer'
+          ? 'qualified'
+          : 'needs_review'
 
       // Email: только адреса из текста сайта; принадлежность ЛПР не предполагается.
       const siteEmails = extractEmails(content)
       const lpr_emails = siteEmails
       const email_source = siteEmails.length > 0 ? 'website' : 'none'
 
-      const brands = extractBrands(content, catalog.items.map(item => item.brand))
+      const brands = catalogConflict ? [] : extractBrands(content, catalog.items.map(item => item.brand))
       const matched_brands = getMatchedBrands(brands, catalog)
-      const address = extractAddress(content)
-      const geocoding = await getCoordinates(company.company_name, city, options?.useGeocode ?? true, address)
+      const address = ai?.address || extractAddress(content)
+      const verifiedCity = ai?.city_match === 'yes' ? city : ''
+      const geocoding = verifiedCity ? await getCoordinates(company.company_name, verifiedCity, options?.useGeocode ?? true, address) : undefined
       const rawLeadScore = calculateLeadScore(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
@@ -655,24 +696,27 @@ export async function enrichCompanyData(companies: any[], city: string, industry
       // Высокий скор нельзя выдавать без подтверждения отрасли и присутствия в городе.
       const lead_score = qualificationStatus === 'qualified'
         ? rawLeadScore
-        : Math.min(rawLeadScore, Math.max(0, scoringCfg.tiers.b - 1))
+        : qualificationStatus === 'not_qualified' ? 0 : Math.min(rawLeadScore, Math.max(0, scoringCfg.tiers.b - 1))
       const lead_tier = getLeadTier(scoringCfg, lead_score)
       const matched_skus = matchCatalogItems(brands, catalog)
 
       enrichedLeads.push({
         company_name: company.company_name,
         domain: company.domain,
-        city,
+        city: verifiedCity,
+        requested_city: city,
         industry,
         source_provider: company.source_provider,
         source_url: company.source_url || company.url,
         source_title: company.source_title || company.company_name,
-        source_snippet: company.source_snippet || company.snippet || '',
+        source_snippet: String(company.source_snippet || company.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 500),
         qualification_status: qualificationStatus,
+        llm_status: useAI ? (ai ? 'ok' : 'unavailable') : 'disabled',
         industry_evidence: ai?.industry_evidence || '',
         city_evidence: ai?.city_evidence || '',
         customer_role: ai?.customer_role || 'unknown',
         customer_role_evidence: ai?.customer_role_evidence || '',
+        address_evidence: ai?.address_evidence || '',
         address,
         coordinates: geocoding ? { lat: geocoding.lat, lng: geocoding.lng } : undefined,
         coordinate_source: geocoding?.source,
