@@ -11,9 +11,12 @@ export interface Lead {
   source_url?: string
   source_title?: string
   source_snippet?: string
-  qualification_status?: 'qualified' | 'needs_review'
+  requested_city?: string
+  qualification_status?: 'qualified' | 'needs_review' | 'not_qualified'
+  llm_status?: 'ok' | 'unavailable' | 'disabled'
   industry_evidence?: string
   city_evidence?: string
+  address_evidence?: string
   customer_role?: 'buyer' | 'supplier' | 'competitor' | 'other' | 'unknown'
   customer_role_evidence?: string
   phone?: string
