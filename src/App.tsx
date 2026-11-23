@@ -399,7 +399,7 @@ export default function App() {
       if (!res.ok) { toast(data.error || 'Не удалось назначить менеджера', 'error'); return }
       if (selectedLead?.id === leadId) setSelectedLead(data)
       await loadData()
-      toast(managerId ? 'Ответственный назначен' : 'Назначение снято; применено правило сектора', 'success')
+      toast(managerId ? 'Ответственный назначен' : 'Назначение снято; правило сектора применено при наличии координат', 'success')
     } catch { toast('Ошибка соединения с сервером', 'error') }
   }
 
