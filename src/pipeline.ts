@@ -179,6 +179,7 @@ interface LeadData {
   brands: string[]
   lead_score: number
   lead_tier: 'A' | 'B' | 'C'
+  score_breakdown?: { total: number; factors: { key: string; label: string; points: number; detail: string }[] }
   business_size?: 'small' | 'medium' | 'large' | 'unknown'
   wholesale?: boolean
   reason?: string
@@ -324,7 +325,7 @@ async function extractWithLLM(companyName: string, domain: string, city: string,
     '  "reason": "одно предложение: почему этому лиду стоит продавать"\n}\n' +
     'Правила:\n' +
     '- industry_match=yes только если сайт прямо подтверждает нужную деятельность; no только при явном противоречии; иначе unknown.\n' +
-    '- city_match=yes только если источник прямо подтверждает филиал/адрес в целевом городе; no только при явном другом городе; иначе unknown.\n' +
+    '- city_match=yes только если цитата полного адреса нужного филиала сама содержит целевой город и он совпадает с целевым городом поиска. Упоминания города в меню, списке регионов или других филиалах не считаются. Если адрес филиала не подтверждает город — unknown; если он в другом городе — no.\n' +
     '- Каталог поставщика: ' + (offeredItems.slice(0, 25).map(item => `${item.brand} ${item.name} ${item.car}`.trim()).join('; ') || 'не задан') + '.\n' +
     '- buyer — организация, которая покупает/использует/перепродаёт именно эти товары или их категорию. Одного совпадения отрасли недостаточно. Клиника не является покупателем автозапчастей. supplier/competitor — продавец или производитель той же категории.\n' +
     '- customer_role_evidence должно отдельно подтверждать коммерческую роль и не повторять цитату об отрасли. Все evidence дословно должны встречаться в исходном тексте. Не придумывай доказательства; если роли нет — unknown.\n' +
@@ -394,6 +395,14 @@ function parseAiExtraction(text: string, content: string, city: string, industry
       }
       const industryEvidenceSupportsTarget = hasTargetTerm(industry_evidence, industry)
       const cityEvidenceSupportsTarget = hasTargetTerm(city_evidence, city)
+      const hasExactCityInAddress = (evidence: string, target: string) => {
+        const words = normalizeEvidence(evidence).replace(/[^a-zа-яё0-9-]+/gi, ' ').split(/\s+/).filter(Boolean)
+        const targetWords = normalizeEvidence(target).replace(/[^a-zа-яё0-9-]+/gi, ' ').split(/\s+/).filter(word => word.length >= 3)
+        return targetWords.length > 0 && targetWords.every(token =>
+          words.some(word => word === token || (token.length >= 8 && word.startsWith(token) && word.length <= token.length + 3))
+        )
+      }
+      const addressEvidenceSupportsTargetCity = hasExactCityInAddress(address_evidence, city)
       const roleEvidenceIsDistinct = Boolean(customer_role_evidence && normalizeEvidence(customer_role_evidence) !== normalizeEvidence(industry_evidence))
       const lpr = Array.isArray(parsed.lpr) ? parsed.lpr.slice(0, 2).map((item: any) => ({
         name: String(item.name || '').trim(),
@@ -408,7 +417,11 @@ function parseAiExtraction(text: string, content: string, city: string, industry
         lpr,
         industry_match: industry_evidence && parsed.industry_match === 'no' ? 'no' : industryEvidenceSupportsTarget && parsed.industry_match === 'yes' ? 'yes' : 'unknown',
         industry_evidence,
-        city_match: city_evidence && parsed.city_match === 'no' ? 'no' : cityEvidenceSupportsTarget && parsed.city_match === 'yes' ? 'yes' : 'unknown',
+        city_match: city_evidence && parsed.city_match === 'no'
+          ? 'no'
+          : cityEvidenceSupportsTarget && addressEvidenceSupportsTargetCity && parsed.city_match === 'yes'
+            ? 'yes'
+            : 'unknown',
         city_evidence,
         customer_role: roleEvidenceIsDistinct && ['buyer', 'supplier', 'competitor', 'other'].includes(parsed.customer_role) ? parsed.customer_role : 'unknown',
         customer_role_evidence: roleEvidenceIsDistinct ? customer_role_evidence : '',
@@ -490,23 +503,33 @@ function extractAddress(content: string): string {
 }
 
 // --- Скоринг ---
+function calculateScoreBreakdown(cfg: ScoringConfig, input: {
+  lprCount: number; emailsCount: number; brandsCount: number
+  businessSize: 'small' | 'medium' | 'large' | 'unknown'
+  wholesale: boolean; contentLength: number
+}): { total: number; factors: { key: string; label: string; points: number; detail: string }[] } {
+  const w = cfg.weights
+  const brandPoints = input.brandsCount > 2 ? w.brands : input.brandsCount > 0 ? Math.round(w.brands / 2) : 0
+  const sizePoints = cfg.businessSizeScores[input.businessSize] ?? cfg.businessSizeScores.unknown
+  const contentPoints = input.contentLength > 1500 ? w.content : input.contentLength > 500 ? Math.round(w.content / 2) : 0
+  const factors = [
+    { key: 'lpr', label: 'ЛПР', points: input.lprCount > 0 ? w.lpr : 0, detail: input.lprCount > 0 ? `Найдено: ${input.lprCount}` : 'Не найдено' },
+    { key: 'emails', label: 'Email сайта', points: input.emailsCount > 0 ? w.emails : 0, detail: input.emailsCount > 0 ? `Найдено адресов: ${input.emailsCount}` : 'Не найдено' },
+    { key: 'brands', label: 'Совпадение брендов', points: brandPoints, detail: input.brandsCount > 0 ? `Совпало с каталогом: ${input.brandsCount}` : 'Совпадений с каталогом нет' },
+    { key: 'businessSize', label: 'Размер бизнеса', points: sizePoints, detail: input.businessSize === 'unknown' ? 'Размер не определён' : input.businessSize },
+    { key: 'wholesale', label: 'Оптовый профиль', points: input.wholesale ? w.wholesale : -cfg.retailPenalty, detail: input.wholesale ? 'Оптовый профиль подтверждён' : 'Опт не подтверждён; применён штраф за розницу' },
+    { key: 'content', label: 'Содержимое сайта', points: contentPoints, detail: input.contentLength > 1500 ? 'Достаточно данных для анализа' : input.contentLength > 500 ? 'Неполные данные' : 'Мало данных на странице' },
+  ]
+  const total = Math.max(0, Math.min(factors.reduce((sum, factor) => sum + factor.points, 0), 100))
+  return { total, factors }
+}
+
 function calculateLeadScore(cfg: ScoringConfig, input: {
   lprCount: number; emailsCount: number; brandsCount: number
   businessSize: 'small' | 'medium' | 'large' | 'unknown'
   wholesale: boolean; contentLength: number
 }): number {
-  const w = cfg.weights
-  let score = 0
-  if (input.lprCount > 0) score += w.lpr
-  if (input.emailsCount > 0) score += w.emails
-  if (input.brandsCount > 2) score += w.brands
-  else if (input.brandsCount > 0) score += Math.round(w.brands / 2)
-  score += cfg.businessSizeScores[input.businessSize] ?? cfg.businessSizeScores.unknown
-  if (input.wholesale) score += w.wholesale
-  else score -= cfg.retailPenalty // штраф за розничный бизнес (как в исходной модели)
-  if (input.contentLength > 1500) score += w.content
-  else if (input.contentLength > 500) score += Math.round(w.content / 2)
-  return Math.max(0, Math.min(score, 100))
+  return calculateScoreBreakdown(cfg, input).total
 }
 
 function getLeadTier(cfg: ScoringConfig, score: number): 'A' | 'B' | 'C' {
@@ -522,7 +545,7 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
   const catalog = loadCatalog(catalogOverride)
   const matched_brands = getMatchedBrands(Array.isArray(lead.brands) ? lead.brands : [], catalog)
   const size = ['small', 'medium', 'large'].includes(lead.business_size) ? lead.business_size : 'unknown'
-  const score = calculateLeadScore(cfg, {
+  const score_breakdown = calculateScoreBreakdown(cfg, {
     lprCount: Array.isArray(lead.lpr) ? lead.lpr.length : 0,
     emailsCount: lead.email_source === 'website' && Array.isArray(lead.lpr_emails) ? lead.lpr_emails.length : 0,
     brandsCount: matched_brands.length,
@@ -530,10 +553,15 @@ export function rescoreLead(lead: any, overrides?: Partial<ScoringConfig> | null
     wholesale: Boolean(lead.wholesale),
     contentLength: 0 // у старых лидов нет исходного текста сайта — не учитываем
   })
+  const score = score_breakdown.total
   // Контент не сохраняем у лидов, поэтому чтобы не занижать всех старых записей,
-  // даём половину веса контента по умолчанию
-  const withContentFallback = Math.min(100, score + Math.round(cfg.weights.content / 2))
-  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
+  // Даём половину веса контента по умолчанию, так как исходный текст старой записи не хранится.
+  const fallbackContentPoints = Math.round(cfg.weights.content / 2)
+  const withContentFallback = Math.min(100, score + fallbackContentPoints)
+  const factors = score_breakdown.factors.map(factor => factor.key === 'content'
+    ? { ...factor, points: fallbackContentPoints, detail: 'Текст страницы не сохранён; применена половина веса' }
+    : factor)
+  return { ...lead, matched_brands, matched_skus: matchCatalogItems(Array.isArray(lead.brands) ? lead.brands : [], catalog), score_breakdown: { total: withContentFallback, factors }, lead_score: withContentFallback, lead_tier: getLeadTier(cfg, withContentFallback) }
 }
 
 // --- Этап 1: Поиск компаний через Tavily ---
@@ -685,7 +713,7 @@ export async function enrichCompanyData(companies: any[], city: string, industry
       const address = ai?.address || extractAddress(content)
       const verifiedCity = ai?.city_match === 'yes' ? city : ''
       const geocoding = verifiedCity ? await getCoordinates(company.company_name, verifiedCity, options?.useGeocode ?? true, address) : undefined
-      const rawLeadScore = calculateLeadScore(scoringCfg, {
+      const score_breakdown = calculateScoreBreakdown(scoringCfg, {
         lprCount: lpr.length,
         emailsCount: siteEmails.length,
         brandsCount: matched_brands.length,
@@ -693,10 +721,20 @@ export async function enrichCompanyData(companies: any[], city: string, industry
         wholesale,
         contentLength: content.length
       })
-      // Высокий скор нельзя выдавать без подтверждения отрасли и присутствия в городе.
+      const rawLeadScore = score_breakdown.total
+      // Высокий скор нельзя выдавать без подтверждения отрасли и адреса филиала в целевом городе.
       const lead_score = qualificationStatus === 'qualified'
         ? rawLeadScore
         : qualificationStatus === 'not_qualified' ? 0 : Math.min(rawLeadScore, Math.max(0, scoringCfg.tiers.b - 1))
+      if (lead_score !== rawLeadScore) {
+        score_breakdown.factors.push({
+          key: 'qualification',
+          label: 'Проверка профиля',
+          points: lead_score - rawLeadScore,
+          detail: qualificationStatus === 'not_qualified' ? 'Не соответствует профилю или целевому городу' : 'Ограничение до проверки профиля и адреса'
+        })
+        score_breakdown.total = lead_score
+      }
       const lead_tier = getLeadTier(scoringCfg, lead_score)
       const matched_skus = matchCatalogItems(brands, catalog)
 
@@ -727,6 +765,7 @@ export async function enrichCompanyData(companies: any[], city: string, industry
         matched_brands,
         lead_score,
         lead_tier,
+        score_breakdown,
         business_size: businessSize,
         wholesale,
         reason,
