@@ -103,13 +103,19 @@ function pointInRing(lng: number, lat: number, ring: [number, number][]): boolea
 }
 
 async function assignLeadToKnownSector(lead: any): Promise<void> {
-  if (!hasValidCoordinates(lead?.coordinates)) return
+  if (lead?.assignment_source === 'manual') return
+  if (!hasValidCoordinates(lead?.coordinates)) {
+    if (lead?.sector_id) await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
+    return
+  }
   const sectors = await db.sectors.list()
   const sector = sectors.find((candidate: any) => {
     const ring = candidate?.polygon?.geometry?.coordinates?.[0]
     return Array.isArray(ring) && ring.length >= 4 && pointInRing(lead.coordinates.lng, lead.coordinates.lat, ring)
   })
-  if (sector) await db.leads.update(lead.id, { sector_id: sector.id, assigned_manager_id: sector.manager_id })
+  await db.leads.update(lead.id, sector
+    ? { sector_id: sector.id, assigned_manager_id: sector.manager_id || undefined, assignment_source: 'sector' }
+    : { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
 }
 
 // Безопасное имя файла КП (защита от path traversal)
@@ -336,6 +342,15 @@ app.put('/api/leads/:id', async (req, res) => {
     if (!Array.isArray(body.brands) || body.brands.length > 30) return res.status(400).json({ error: 'Можно сохранить не более 30 брендов' })
     body.brands = [...new Set(body.brands.map((brand: any) => String(brand).trim().slice(0, 100)).filter(Boolean))]
   }
+  if (body.assignment_source !== undefined && body.assigned_manager_id === undefined) delete body.assignment_source
+  if (body.assigned_manager_id !== undefined) {
+    const managerId = String(body.assigned_manager_id || '')
+    if (managerId && !(await db.managers.list()).some((manager: any) => manager.id === managerId)) {
+      return res.status(400).json({ error: 'Выбранный менеджер не найден' })
+    }
+    body.assigned_manager_id = managerId || undefined
+    body.assignment_source = managerId ? 'manual' : 'sector'
+  }
   if (body.pdf_file !== undefined) {
     if (body.pdf_file === null || body.pdf_file === '') {
       body.pdf_file = null
@@ -346,6 +361,10 @@ app.put('/api/leads/:id', async (req, res) => {
   delete body.id
   let updated = await db.leads.update(req.params.id, body)
   if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+  if (body.assignment_source === 'sector') {
+    await assignLeadToKnownSector(updated)
+    updated = await db.leads.get(req.params.id) || updated
+  }
   const scoringFieldsChanged = ['lpr', 'lpr_emails', 'brands', 'business_size', 'wholesale'].some(field => body[field] !== undefined)
   if (scoringFieldsChanged) {
     const supplier = (await db.settings.get('supplier_config')) || {}
@@ -353,6 +372,7 @@ app.put('/api/leads/:id', async (req, res) => {
     const scored = rescoreLead(updated, scoring, getSupplierCatalog(supplier))
     updated = await db.leads.update(req.params.id, {
       lead_score: scored.lead_score, lead_tier: scored.lead_tier,
+      score_breakdown: scored.score_breakdown,
       matched_brands: scored.matched_brands, matched_skus: scored.matched_skus
     })
   }
@@ -508,7 +528,11 @@ app.post('/api/sectors', async (req, res) => {
   let assigned = 0
   for (const lead of leads) {
     if (hasValidCoordinates(lead.coordinates) && pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), ring)) {
-      await db.leads.update(lead.id, { sector_id: newSector.id, assigned_manager_id: newSector.manager_id })
+      await db.leads.update(lead.id, {
+        sector_id: newSector.id,
+        assigned_manager_id: lead.assignment_source === 'manual' ? lead.assigned_manager_id : (newSector.manager_id || undefined),
+        assignment_source: lead.assignment_source === 'manual' ? 'manual' : 'sector'
+      })
       assigned++
     }
   }
@@ -558,15 +582,25 @@ app.put('/api/sectors/:id', async (req, res) => {
   let assigned = 0
   for (const lead of leads) {
     if (!hasValidCoordinates(lead.coordinates)) {
-      if (lead.sector_id === updated.id) await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      if (lead.sector_id === updated.id) {
+        await db.leads.update(lead.id, lead.assignment_source === 'manual'
+          ? { sector_id: undefined, assigned_manager_id: lead.assigned_manager_id, assignment_source: 'manual' }
+          : { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
+      }
       continue
     }
     const isInside = pointInRing(Number(lead.coordinates.lng), Number(lead.coordinates.lat), polygon.geometry.coordinates[0])
     if (isInside) {
-      await db.leads.update(lead.id, { sector_id: updated.id, assigned_manager_id: updated.manager_id })
+      await db.leads.update(lead.id, {
+        sector_id: updated.id,
+        assigned_manager_id: lead.assignment_source === 'manual' ? lead.assigned_manager_id : (updated.manager_id || undefined),
+        assignment_source: lead.assignment_source === 'manual' ? 'manual' : 'sector'
+      })
       assigned++
     } else if (lead.sector_id === updated.id) {
-      await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      await db.leads.update(lead.id, lead.assignment_source === 'manual'
+        ? { sector_id: undefined, assigned_manager_id: lead.assigned_manager_id, assignment_source: 'manual' }
+        : { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
       await assignLeadToKnownSector({ ...lead, sector_id: undefined, assigned_manager_id: undefined })
     } else if (lead.sector_id === undefined || lead.sector_id === null) {
       await assignLeadToKnownSector(lead)
@@ -582,7 +616,9 @@ app.delete('/api/sectors/:id', async (req, res) => {
   let unassigned = 0
   for (const lead of leads) {
     if (lead.sector_id === sector.id) {
-      await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined })
+      await db.leads.update(lead.id, lead.assignment_source === 'manual'
+        ? { sector_id: undefined, assigned_manager_id: lead.assigned_manager_id, assignment_source: 'manual' }
+        : { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
       unassigned++
     }
   }
