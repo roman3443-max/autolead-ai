@@ -130,6 +130,7 @@ export default function App() {
   const [leadEditMode, setLeadEditMode] = useState(false)
   const [leadEditDraft, setLeadEditDraft] = useState<any>(null)
   const [leadSaveBusy, setLeadSaveBusy] = useState(false)
+  const [leadRecheckBusy, setLeadRecheckBusy] = useState(false)
   const [newComment, setNewComment] = useState('')
   const [followUpDraft, setFollowUpDraft] = useState({ date: '', note: '' })
   const [followUpBusy, setFollowUpBusy] = useState(false)
@@ -401,6 +402,19 @@ export default function App() {
       await loadData()
       toast(managerId ? 'Ответственный назначен' : 'Назначение снято; правило сектора применено при наличии координат', 'success')
     } catch { toast('Ошибка соединения с сервером', 'error') }
+  }
+
+  const handleRecheckLead = async (lead: Lead) => {
+    setLeadRecheckBusy(true)
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/${lead.id}/recheck`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось повторно проверить лид', 'error'); return }
+      if (selectedLead?.id === lead.id) setSelectedLead(data)
+      await loadData()
+      toast(data.llm_status === 'ok' ? 'Сайт повторно проверен: цитаты и статус LLM обновлены' : 'Данные сайта обновлены, но LLM недоступна', data.llm_status === 'ok' ? 'success' : 'error')
+    } catch { toast('Ошибка соединения с сервером', 'error') }
+    finally { setLeadRecheckBusy(false) }
   }
 
   const handleStatusChange = async (leadId: string, newStatus: string) => {
@@ -936,13 +950,31 @@ export default function App() {
                 <div className="text-sm text-slate-200">{selectedLead.search_task_name || 'Ручной импорт'}</div>
                 {selectedLead.source_url && <a href={selectedLead.source_url} target="_blank" rel="noreferrer" className="text-xs text-cyan-300 hover:text-cyan-200 underline underline-offset-2">Сайт-источник{selectedLead.source_provider ? ` · ${selectedLead.source_provider}` : ''}</a>}
                 {selectedLead.source_snippet && <div className="text-xs text-slate-400 mt-2 line-clamp-3">{selectedLead.source_snippet}</div>}
+                {selectedLead.social_sources?.length ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="label">Публичные страницы соцсетей · найдены поиском, связь проверьте вручную</div>
+                    {selectedLead.social_sources.map((source, index) => (
+                      <div key={`${source.url}-${index}`} className="rounded-lg border border-line bg-ink-800/50 p-2.5">
+                        <a href={source.url} target="_blank" rel="noreferrer" className="text-xs text-cyan-300 hover:text-cyan-200 underline underline-offset-2">{source.provider}: {source.title || source.url}</a>
+                        {source.snippet && <div className="text-[11px] text-slate-400 mt-1">{source.snippet}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : Array.isArray(selectedLead.social_sources) ? (
+                  <div className="text-[11px] text-slate-500 mt-2">Публичные страницы VK и Telegram в выдаче не найдены.</div>
+                ) : null}
               </div>
             </div>
 
             {selectedLead.source_type === 'search' && (
               <div className={`rounded-xl border px-4 py-3 ${selectedLead.qualification_status === 'qualified' ? 'border-emerald-500/30 bg-emerald-500/5' : selectedLead.qualification_status === 'not_qualified' ? 'border-rose-500/30 bg-rose-500/5' : 'border-amber-500/30 bg-amber-500/5'}`}>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-2">
-                  {selectedLead.qualification_status === 'qualified' ? 'Профиль подтверждён по источнику' : selectedLead.qualification_status === 'not_qualified' ? 'Не подходит по профилю поставщика' : 'Нужно проверить соответствие профилю'}
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+                    {selectedLead.qualification_status === 'qualified' ? 'Профиль подтверждён по источнику' : selectedLead.qualification_status === 'not_qualified' ? 'Не подходит по профилю поставщика' : 'Нужно проверить соответствие профилю'}
+                  </div>
+                  <button onClick={() => void handleRecheckLead(selectedLead)} disabled={leadRecheckBusy} className="btn-ghost !py-1.5 text-[11px] whitespace-nowrap">
+                    {leadRecheckBusy ? 'Проверяю сайт…' : 'Проверить заново'}
+                  </button>
                 </div>
                 <div className={`text-xs mb-2 ${selectedLead.llm_status === 'ok' ? 'text-emerald-300' : selectedLead.llm_status === 'unavailable' ? 'text-rose-300' : 'text-amber-300'}`}>
                   LLM: {selectedLead.llm_status === 'ok' ? 'ответ получен' : selectedLead.llm_status === 'disabled' ? 'отключена для задачи' : selectedLead.llm_status === 'unavailable' ? 'недоступна; автоматическая квалификация не подтверждена' : 'для старой записи статус не сохранён'}
