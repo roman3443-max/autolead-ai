@@ -42,6 +42,8 @@ export interface Lead {
   status_history?: { status: string; date: string }[]
   sector_id?: string
   assigned_manager_id?: string
+  assignment_source?: 'manual' | 'sector'
+  score_breakdown?: { total: number; factors: { key: string; label: string; points: number; detail: string }[] }
   search_task_id?: string
   search_task_name?: string
 }
