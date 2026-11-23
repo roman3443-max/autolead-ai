@@ -348,10 +348,10 @@ export default function LeadsPage(p: Props) {
                             : lead.qualification_status === 'not_qualified'
                               ? <span className="chip bg-rose-500/10 text-rose-300">Не подходит</span>
                               : lead.source_type === 'search' && <span className="chip bg-amber-500/10 text-amber-300">Проверить профиль</span>}
-                          {lead.business_size && lead.business_size !== 'unknown' && (
+                          {lead.business_size && lead.business_size !== 'unknown' && (lead.source_type !== 'search' || lead.qualification_status === 'qualified') && (
                             <span className="chip bg-sky-500/10 text-sky-300">{SIZE_LABELS[lead.business_size]}</span>
                           )}
-                          {lead.wholesale && <span className="chip bg-emerald-500/10 text-emerald-300">Опт</span>}
+                          {lead.wholesale && (lead.source_type !== 'search' || lead.qualification_status === 'qualified') && <span className="chip bg-emerald-500/10 text-emerald-300">Опт</span>}
                           {lead.search_task_name && (
                             <span className="chip bg-violet-500/10 text-violet-300" title={`Задача поиска: ${lead.search_task_name}`}>
                               {lead.search_task_name}
