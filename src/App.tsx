@@ -296,6 +296,11 @@ export default function App() {
 
   const handleRunTask = async (task: SearchTask) => {
     if (isPipelineRunning) { toast('Дождитесь завершения текущего поиска', 'error'); return }
+    // После автоперехода из задачи показываем именно её лиды, а не фильтр
+    // предыдущего запуска, оставшийся в состоянии таблицы.
+    setSearchTaskFilter({ id: task.id, name: task.name })
+    setSearchQuery('')
+    setStatusFilter('all')
     setIsPipelineRunning(true); setJob(null)
     try {
       const res = await apiFetch(`${API_URL}/api/search-tasks/${task.id}/run`, { method: 'POST' })
@@ -483,7 +488,7 @@ export default function App() {
   }
 
   const buildLetter = (lead: Lead) => {
-    const topBrands = lead.brands.slice(0, 3).join(', ')
+    const topBrands = (lead.matched_brands || []).slice(0, 3).join(', ')
     const subject = `Коммерческое предложение для ${lead.company_name}${topBrands ? ' | ' + topBrands : ''}`
     const body = [
       `Добрый день, ${lead.lpr[0]?.name || 'коллеги'}!`,
@@ -735,8 +740,9 @@ export default function App() {
   }
 
   const checklist = selectedLead ? [
-    { label: 'ЛПР найден с цитатой источника', done: selectedLead.lpr.some(person => Boolean(person.evidence)) },
-    { label: 'Email найден на сайте', done: selectedLead.email_source === 'website' && (selectedLead.lpr_emails || []).length > 0 },
+    { label: 'LLM-проверка профиля выполнена', done: selectedLead.llm_status === 'ok' },
+    { label: 'ЛПР найден с именем, должностью и цитатой', done: Array.isArray(selectedLead.lpr) && selectedLead.lpr.some(person => Boolean(person.name?.trim() && person.position?.trim() && person.evidence?.trim() && person.evidence.toLocaleLowerCase('ru-RU').includes(person.name.toLocaleLowerCase('ru-RU')))) },
+    { label: 'Email найден на сайте', done: selectedLead.email_source === 'website' && (selectedLead.lpr_emails || []).some(email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) },
     { label: 'КП готово', done: Boolean(selectedLead.pdf_file) },
     { label: 'Текст письма скопирован', done: Boolean(copiedLetters[selectedLead.id]) },
     { label: 'КП отправлено', done: ['contacted', 'in_progress', 'converted'].includes(selectedLead.status) },
@@ -861,8 +867,8 @@ export default function App() {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               {[
                 ['Сайт', selectedLead.domain || '—'],
-                ['Город', selectedLead.city || '—'],
-                ['Вид деятельности', selectedLead.industry || '—'],
+                ['Город компании', selectedLead.qualification_status === 'qualified' ? selectedLead.city || '—' : `Не подтверждён${selectedLead.requested_city || selectedLead.city ? ` · искали: ${selectedLead.requested_city || selectedLead.city}` : ''}`],
+                ['Искомая отрасль', selectedLead.industry || '—'],
                 ['Адрес', selectedLead.address || '—'],
                 ['Телефон', selectedLead.phone || '—'],
                 ['Lead Score', String(selectedLead.lead_score)],
@@ -893,26 +899,31 @@ export default function App() {
                 </div>
               </div>
               <div className="col-span-2 sm:col-span-3">
-                <div className="label">Источник</div>
+                <div className="label">Задача поиска</div>
                 <div className="text-sm text-slate-200">{selectedLead.search_task_name || 'Ручной импорт'}</div>
-                {selectedLead.source_url && <a href={selectedLead.source_url} target="_blank" rel="noreferrer" className="text-xs text-cyan-300 hover:text-cyan-200 underline underline-offset-2">Открыть источник поиска{selectedLead.source_provider ? ` · ${selectedLead.source_provider}` : ''}</a>}
+                {selectedLead.source_url && <a href={selectedLead.source_url} target="_blank" rel="noreferrer" className="text-xs text-cyan-300 hover:text-cyan-200 underline underline-offset-2">Сайт-источник{selectedLead.source_provider ? ` · ${selectedLead.source_provider}` : ''}</a>}
                 {selectedLead.source_snippet && <div className="text-xs text-slate-400 mt-2 line-clamp-3">{selectedLead.source_snippet}</div>}
               </div>
             </div>
 
             {selectedLead.source_type === 'search' && (
-              <div className={`rounded-xl border px-4 py-3 ${selectedLead.qualification_status === 'qualified' ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'}`}>
+              <div className={`rounded-xl border px-4 py-3 ${selectedLead.qualification_status === 'qualified' ? 'border-emerald-500/30 bg-emerald-500/5' : selectedLead.qualification_status === 'not_qualified' ? 'border-rose-500/30 bg-rose-500/5' : 'border-amber-500/30 bg-amber-500/5'}`}>
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-2">
-                  {selectedLead.qualification_status === 'qualified' ? 'Профиль подтверждён по источнику' : 'Нужно проверить соответствие профилю'}
+                  {selectedLead.qualification_status === 'qualified' ? 'Профиль подтверждён по источнику' : selectedLead.qualification_status === 'not_qualified' ? 'Не подходит по профилю поставщика' : 'Нужно проверить соответствие профилю'}
+                </div>
+                <div className={`text-xs mb-2 ${selectedLead.llm_status === 'ok' ? 'text-emerald-300' : selectedLead.llm_status === 'unavailable' ? 'text-rose-300' : 'text-amber-300'}`}>
+                  LLM: {selectedLead.llm_status === 'ok' ? 'ответ получен' : selectedLead.llm_status === 'disabled' ? 'отключена для задачи' : selectedLead.llm_status === 'unavailable' ? 'недоступна; автоматическая квалификация не подтверждена' : 'для старой записи статус не сохранён'}
                 </div>
                 {selectedLead.industry_evidence && <div className="text-xs text-slate-300">Отрасль: «{selectedLead.industry_evidence}»</div>}
                 {selectedLead.city_evidence && <div className="text-xs text-slate-300 mt-1">Город: «{selectedLead.city_evidence}»</div>}
                 {selectedLead.customer_role && <div className="text-xs text-slate-300 mt-1">Роль: {selectedLead.customer_role === 'buyer' ? 'покупатель' : selectedLead.customer_role === 'supplier' ? 'поставщик' : selectedLead.customer_role === 'competitor' ? 'конкурент' : selectedLead.customer_role === 'other' ? 'другая' : 'не установлена'}{selectedLead.customer_role_evidence ? ` · «${selectedLead.customer_role_evidence}»` : ''}</div>}
-                {!selectedLead.industry_evidence && !selectedLead.city_evidence && !selectedLead.customer_role_evidence && <div className="text-xs text-slate-400">LLM не подтвердила отрасль, город и роль точными цитатами; высокий скор не присвоен.</div>}
+                {selectedLead.address_evidence && <div className="text-xs text-slate-300 mt-1">Адрес: «{selectedLead.address_evidence}»</div>}
+                {selectedLead.requested_city && selectedLead.requested_city !== selectedLead.city && <div className="text-xs text-rose-300 mt-2">Искали в городе «{selectedLead.requested_city}». Фактический город не подтверждён — лид не привязан к карте.</div>}
+                {!selectedLead.industry_evidence && !selectedLead.city_evidence && !selectedLead.customer_role_evidence && <div className="text-xs text-slate-400">Нет проверенных цитат по профилю; высокий скор не присвоен.</div>}
               </div>
             )}
 
-            {selectedLead.reason && (
+            {selectedLead.reason && selectedLead.qualification_status === 'qualified' && selectedLead.llm_status === 'ok' && (
               <div className="rounded-xl border-l-2 border-indigo-500 bg-indigo-500/5 px-4 py-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-indigo-300 mb-1">Почему этому лиду стоит продавать</div>
                 <div className="text-[13px] text-slate-300 leading-relaxed">{selectedLead.reason}</div>
@@ -981,16 +992,19 @@ export default function App() {
             </div>
 
             <div>
-              <div className="label">Бренды компании</div>
+              <div className="label">{selectedLead.source_type === 'search' ? 'Совпавшие бренды из предложения' : 'Бренды компании'}</div>
               <div className="flex flex-wrap gap-1.5">
-                {selectedLead.brands.map((b, i) => (
+                {(selectedLead.source_type === 'search' ? selectedLead.matched_brands || [] : selectedLead.brands || []).map((b, i) => (
                   <span key={i} className="chip bg-ink-700 text-slate-300 !px-2.5 !py-1">{b}</span>
                 ))}
+                {selectedLead.source_type === 'search' && !selectedLead.matched_brands?.length && <span className="text-xs text-slate-500">Подтверждённых совпадений нет.</span>}
               </div>
-              <div className="label mt-3">Совпадение с предложением поставщика</div>
-              <div className="text-[13px] text-slate-300">
-                {selectedLead.matched_brands?.length ? selectedLead.matched_brands.join(', ') : 'Совпавших брендов нет — брендовая часть скоринга не начислена.'}
-              </div>
+              {selectedLead.source_type !== 'search' && <>
+                <div className="label mt-3">Совпадение с предложением поставщика</div>
+                <div className="text-[13px] text-slate-300">
+                  {selectedLead.matched_brands?.length ? selectedLead.matched_brands.join(', ') : 'Совпавших брендов нет — брендовая часть скоринга не начислена.'}
+                </div>
+              </>}
             </div>
 
             <div className="card !bg-ink-800/50 p-4 space-y-3">
