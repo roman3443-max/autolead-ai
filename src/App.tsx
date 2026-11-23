@@ -389,6 +389,20 @@ export default function App() {
   }
 
   // ---------- лиды ----------
+  const handleAssignManager = async (leadId: string, managerId: string) => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/leads/${leadId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ assigned_manager_id: managerId || null })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { toast(data.error || 'Не удалось назначить менеджера', 'error'); return }
+      if (selectedLead?.id === leadId) setSelectedLead(data)
+      await loadData()
+      toast(managerId ? 'Ответственный назначен' : 'Назначение снято; применено правило сектора', 'success')
+    } catch { toast('Ошибка соединения с сервером', 'error') }
+  }
+
   const handleStatusChange = async (leadId: string, newStatus: string) => {
     const lead = leads.find(l => l.id === leadId)
     const status_history = [...(lead?.status_history || []), { status: newStatus, date: new Date().toLocaleString('ru-RU') }]
@@ -816,6 +830,8 @@ export default function App() {
             onPreviewImport={handlePreviewImport}
             onCommitImport={handleCommitImport}
             onStatusChange={handleStatusChange}
+            managers={managers}
+            onAssignManager={handleAssignManager}
           />
         )}
         {activeTab === 'map' && <MapPage leads={leads} sectors={sectors} managers={managers} onGeocodeMissing={handleGeocodeMissing} onGeocodeCity={handleGeocodeCity} onCreateSector={handleCreateSector} onUpdateSector={handleUpdateSector} onDeleteSector={handleDeleteSector} onOpenLead={handleOpenLead} />}
@@ -893,6 +909,21 @@ export default function App() {
                 </select>
               </div>
               <div>
+                <div className="label">Ответственный</div>
+                <select
+                  value={selectedLead.assigned_manager_id || ''}
+                  onChange={e => void handleAssignManager(selectedLead.id, e.target.value)}
+                  className="input !py-1.5 !px-2.5 text-[12px] !bg-ink-800"
+                  aria-label="Ответственный менеджер"
+                >
+                  <option value="">Не назначен{selectedLead.sector_id ? ' · сектор без менеджера' : ''}</option>
+                  {managers.map((manager: any) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}
+                </select>
+                <div className="text-[10px] text-slate-500 mt-1">
+                  {selectedLead.assignment_source === 'manual' ? 'Назначен вручную' : selectedLead.sector_id ? 'Назначен автоматически по сектору' : 'Можно назначить вручную или через сектор'}
+                </div>
+              </div>
+              <div>
                 <div className="label">Размер бизнеса</div>
                 <div className="text-sm text-slate-200">
                   {selectedLead.source_type === 'search' && selectedLead.qualification_status !== 'qualified'
@@ -922,6 +953,22 @@ export default function App() {
                 {selectedLead.address_evidence && <div className="text-xs text-slate-300 mt-1">Адрес: «{selectedLead.address_evidence}»</div>}
                 {selectedLead.requested_city && selectedLead.requested_city !== selectedLead.city && <div className="text-xs text-rose-300 mt-2">Искали в городе «{selectedLead.requested_city}». Фактический город не подтверждён — лид не привязан к карте.</div>}
                 {!selectedLead.industry_evidence && !selectedLead.city_evidence && !selectedLead.customer_role_evidence && <div className="text-xs text-slate-400">Нет проверенных цитат по профилю; высокий скор не присвоен.</div>}
+              </div>
+            )}
+
+            {selectedLead.score_breakdown && (
+              <div className="rounded-xl border border-line bg-ink-800/50 px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300 mb-2">Основание скоринга · {selectedLead.score_breakdown.total}/100</div>
+                <div className="space-y-1.5">
+                  {selectedLead.score_breakdown.factors.map(factor => (
+                    <div key={factor.key} className="flex items-start justify-between gap-3 text-xs">
+                      <div className="text-slate-300">{factor.label}<div className="text-[10px] text-slate-500">{factor.detail}</div></div>
+                      <span className={`shrink-0 font-semibold tabular-nums ${factor.points < 0 ? 'text-rose-300' : factor.points > 0 ? 'text-emerald-300' : 'text-slate-500'}`}>
+                        {factor.points > 0 ? '+' : ''}{factor.points}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
