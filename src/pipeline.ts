@@ -162,6 +162,7 @@ interface LeadData {
   source_url?: string
   source_title?: string
   source_snippet?: string
+  social_sources?: { provider: 'VK' | 'Telegram'; url: string; title: string; snippet?: string }[]
   qualification_status?: 'qualified' | 'needs_review' | 'not_qualified'
   llm_status?: 'ok' | 'unavailable' | 'disabled'
   industry_evidence?: string
@@ -662,6 +663,45 @@ export async function searchCompanies(city: string, industry: string, limit: num
   throw new Error(`Tavily: ${String(lastError?.message || lastError || 'неизвестная ошибка').slice(0, 200)}. Проверьте TAVILY_API_KEY и доступ к API.`)
 }
 
+async function findPublicSocialSources(companyName: string, city: string, industry: string): Promise<{ provider: 'VK' | 'Telegram'; url: string; title: string; snippet?: string }[]> {
+  if (!process.env.TAVILY_API_KEY) return []
+  const stopWords = new Set(['ооо', 'ао', 'пао', 'зао', 'ип', 'компания', 'официальный', 'сайт', 'клиника', 'стоматология', 'медицинский', 'центр'])
+  const nameTokens = normalizeEvidence(companyName).replace(/[^a-zа-яё0-9]+/gi, ' ').split(/\s+/).filter(token => token.length >= 4 && !stopWords.has(token))
+  if (!nameTokens.length) return []
+  try {
+    const response = await tvly.search(`site:vk.com OR site:t.me "${companyName}" ${city} ${industry}`, {
+      searchDepth: 'basic',
+      maxResults: 8,
+      timeout: 12
+    })
+    const sources: { provider: 'VK' | 'Telegram'; url: string; title: string; snippet?: string }[] = []
+    for (const result of response.results || []) {
+      try {
+        const parsed = new URL(result.url)
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '')
+        const provider = host === 'vk.com' || host.endsWith('.vk.com')
+          ? 'VK'
+          : host === 't.me' || host === 'telegram.me' || host.endsWith('.telegram.me')
+            ? 'Telegram'
+            : null
+        if (!provider) continue
+        const title = String(result.title || '').trim()
+        const snippet = String(result.content || '').replace(/\s+/g, ' ').trim().slice(0, 400)
+        const searchable = normalizeEvidence(`${title} ${snippet} ${parsed.pathname}`)
+        const matchedTokens = nameTokens.filter(token => searchable.includes(token))
+        if (matchedTokens.length < Math.min(2, nameTokens.length)) continue
+        if (sources.some(source => source.url === result.url)) continue
+        sources.push({ provider, url: result.url, title: title || result.url, snippet })
+        if (sources.length >= 3) break
+      } catch { /* пропускаем некорректные ссылки */ }
+    }
+    return sources
+  } catch (error: any) {
+    console.warn('  ⚠️ Поиск публичных страниц в соцсетях недоступен:', String(error?.message || error).slice(0, 120))
+    return []
+  }
+}
+
 // --- Этап 2: Обогащение данных через Firecrawl ---
 export async function enrichCompanyData(companies: any[], city: string, industry: string, onProgress?: (processed: number, total: number) => void, options?: PipelineOptions) {
   console.log('🕷️ Обогащение данных...')
@@ -685,8 +725,11 @@ export async function enrichCompanyData(companies: any[], city: string, industry
 
       const content = scrapeResult.markdown
 
-      // Если LLM недоступна, эвристики не подтверждают профиль и лид не получает высокий скор.
-      const ai = useAI ? await extractWithLLM(company.company_name, company.domain, city, industry, content, catalog.items) : null
+      // Ищем только публичные страницы компаний; ссылки соцсетей не используются как доказательство профиля или города.
+      const [ai, social_sources] = await Promise.all([
+        useAI ? extractWithLLM(company.company_name, company.domain, city, industry, content, catalog.items) : Promise.resolve(null),
+        findPublicSocialSources(company.company_name, city, industry)
+      ])
       const lpr = ai && ai.lpr.length > 0 ? ai.lpr : extractLPRRegex(content)
       const businessSize = ai && ai.industry_match === 'yes' && ai.city_match === 'yes' ? ai.business_size : 'unknown'
       const wholesale = ai && ai.industry_match === 'yes' && ai.city_match === 'yes' ? ai.wholesale : false
@@ -748,6 +791,7 @@ export async function enrichCompanyData(companies: any[], city: string, industry
         source_url: company.source_url || company.url,
         source_title: company.source_title || company.company_name,
         source_snippet: String(company.source_snippet || company.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+        social_sources,
         qualification_status: qualificationStatus,
         llm_status: useAI ? (ai ? 'ok' : 'unavailable') : 'disabled',
         industry_evidence: ai?.industry_evidence || '',
