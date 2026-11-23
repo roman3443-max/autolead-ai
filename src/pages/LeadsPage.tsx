@@ -345,7 +345,9 @@ export default function LeadsPage(p: Props) {
                           {lead.industry && <span className='chip bg-indigo-500/10 text-indigo-300'>{lead.industry}</span>}
                           {lead.qualification_status === 'qualified'
                             ? <span className="chip bg-emerald-500/10 text-emerald-300">Профиль подтверждён</span>
-                            : lead.source_type === 'search' && <span className="chip bg-amber-500/10 text-amber-300">Проверить профиль</span>}
+                            : lead.qualification_status === 'not_qualified'
+                              ? <span className="chip bg-rose-500/10 text-rose-300">Не подходит</span>
+                              : lead.source_type === 'search' && <span className="chip bg-amber-500/10 text-amber-300">Проверить профиль</span>}
                           {lead.business_size && lead.business_size !== 'unknown' && (
                             <span className="chip bg-sky-500/10 text-sky-300">{SIZE_LABELS[lead.business_size]}</span>
                           )}
@@ -394,7 +396,7 @@ export default function LeadsPage(p: Props) {
                               </div>
                             ) : <span className="text-[11px] text-slate-500">Нет совпадений</span>}
                           </div>
-                          {!!lead.brands?.length && (
+                          {!!lead.brands?.length && (lead.source_type === 'import' || Boolean(lead.matched_brands?.length)) && (
                             <div className="text-[11px] text-slate-500 leading-snug">
                               {lead.source_type === 'import' ? 'В исходном импорте: ' : 'Упоминания на сайте · наличие не подтверждено: '}
                               {lead.brands.slice(0, 5).join(', ')}{lead.brands.length > 5 ? ` и ещё ${lead.brands.length - 5}` : ''}
