@@ -446,7 +446,7 @@ app.post('/api/leads/rescore', async (req, res) => {
   for (const l of leads) {
     const r = rescoreLead(l, scoring, catalog)
     dist[r.lead_tier] = (dist[r.lead_tier] || 0) + 1
-    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, matched_brands: r.matched_brands, matched_skus: r.matched_skus })
+    await db.leads.update(l.id, { lead_score: r.lead_score, lead_tier: r.lead_tier, score_breakdown: r.score_breakdown, matched_brands: r.matched_brands, matched_skus: r.matched_skus })
   }
   console.log(`♻️ Пересчитано ${leads.length} лидов: A=${dist.A} B=${dist.B} C=${dist.C}`)
   res.json({ rescored: leads.length, distribution: dist })
