@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
-import { runPipeline, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
+import { runPipeline, enrichCompanyData, generateKP, rescoreLead, loadSearchDefaults, loadCatalog, matchCatalogItems, getCoordinates } from './src/pipeline.ts'
 import { db, initDb, closeDb, dbMode } from './src/db/index.ts'
 import { authMiddleware, loginHandler, requireAdmin, assertAuthConfig } from './src/auth.ts'
 
@@ -377,6 +377,74 @@ app.put('/api/leads/:id', async (req, res) => {
     })
   }
   res.json(updated)
+})
+
+app.post('/api/leads/:id/recheck', async (req, res) => {
+  const lead = await db.leads.get(req.params.id)
+  if (!lead) return res.status(404).json({ error: 'Лид не найден' })
+  if (lead.source_type !== 'search') return res.status(409).json({ error: 'Повторная проверка доступна для лидов из поиска' })
+
+  const task = lead.search_task_id ? await db.tasks.get(lead.search_task_id) : null
+  const city = String(task?.city || lead.requested_city || lead.city || '').trim()
+  const industry = String(task?.industry || lead.industry || '').trim()
+  if (!city || !industry) return res.status(422).json({ error: 'Не удалось определить город и отрасль исходного поиска' })
+
+  const sourceUrl = String(lead.source_url || (lead.domain ? `https://${lead.domain}` : '')).trim()
+  try {
+    const parsedUrl = new URL(sourceUrl)
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('invalid protocol')
+    const supplier = (await db.settings.get('supplier_config')) || {}
+    const globalScoring = (await db.settings.get('scoring_config')) || {}
+    const catalog = getSupplierCatalog(supplier)
+    const result = await enrichCompanyData([{
+      company_name: lead.company_name,
+      domain: lead.domain || parsedUrl.hostname,
+      url: sourceUrl,
+      source_provider: lead.source_provider || 'Tavily',
+      source_url: sourceUrl,
+      source_title: lead.source_title || lead.company_name,
+      source_snippet: lead.source_snippet || ''
+    }], city, industry, undefined, {
+      useAI: true,
+      useGeocode: true,
+      scoring: globalScoring,
+      supplierCatalog: catalog
+    })
+    if (!result.length) return res.status(502).json({ error: 'Не удалось повторно загрузить страницу компании' })
+
+    const fresh = result[0]
+    const manualLpr = (Array.isArray(lead.lpr) ? lead.lpr : []).filter((person: any) => !person.evidence)
+    const freshLpr = Array.isArray(fresh.lpr) ? fresh.lpr : []
+    const lpr = [...manualLpr, ...freshLpr.filter((person: any) => !manualLpr.some((manual: any) => String(manual.name).toLowerCase() === String(person.name).toLowerCase()))]
+    const preserveManualEmail = ['manual', 'import'].includes(lead.email_source)
+    const manualAssignment = lead.assignment_source === 'manual'
+    const updated = await db.leads.update(lead.id, {
+      ...fresh,
+      id: lead.id,
+      source_type: lead.source_type,
+      search_task_id: lead.search_task_id,
+      search_task_name: lead.search_task_name,
+      status: lead.status,
+      status_history: lead.status_history,
+      comments: lead.comments,
+      activities: lead.activities,
+      next_contact_at: lead.next_contact_at,
+      pdf_file: lead.pdf_file,
+      phone: lead.phone,
+      lpr,
+      lpr_emails: preserveManualEmail ? lead.lpr_emails : fresh.lpr_emails,
+      email_source: preserveManualEmail ? lead.email_source : fresh.email_source,
+      sector_id: manualAssignment ? lead.sector_id : undefined,
+      assigned_manager_id: manualAssignment ? lead.assigned_manager_id : undefined,
+      assignment_source: manualAssignment ? 'manual' : undefined
+    })
+    if (!updated) return res.status(404).json({ error: 'Лид не найден' })
+    await assignLeadToKnownSector(updated)
+    res.json(await db.leads.get(lead.id))
+  } catch (error: any) {
+    console.error('❌ Повторная проверка лида завершилась ошибкой:', error)
+    res.status(500).json({ error: 'Не удалось повторно проверить лид. Проверьте доступность Firecrawl и LLM.' })
+  }
 })
 
 app.post('/api/leads/:id/generate-kp', async (req, res) => {
