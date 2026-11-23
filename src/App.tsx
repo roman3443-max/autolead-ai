@@ -895,7 +895,9 @@ export default function App() {
               <div>
                 <div className="label">Размер бизнеса</div>
                 <div className="text-sm text-slate-200">
-                  {SIZE_LABELS[selectedLead.business_size || 'unknown']}{selectedLead.wholesale ? ' · опт' : ''}
+                  {selectedLead.source_type === 'search' && selectedLead.qualification_status !== 'qualified'
+                    ? 'Не подтверждён'
+                    : `${SIZE_LABELS[selectedLead.business_size || 'unknown']}${selectedLead.wholesale ? ' · опт' : ''}`}
                 </div>
               </div>
               <div className="col-span-2 sm:col-span-3">
