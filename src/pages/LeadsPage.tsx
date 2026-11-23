@@ -21,6 +21,8 @@ interface Props {
   onPreviewImport: (rows: any[], sourceName: string) => Promise<any>
   onCommitImport: (rows: any[], sourceName: string) => Promise<any>
   onStatusChange: (leadId: string, status: string) => void
+  managers: any[]
+  onAssignManager: (leadId: string, managerId: string) => void
 }
 
 
@@ -328,6 +330,7 @@ export default function LeadsPage(p: Props) {
                   <th className="th">Бренды · упоминания и совпадения</th>
                   <th className="th">Скор</th>
                   <th className="th">Статус</th>
+                  <th className="th">Ответственный</th>
                   <th className="th text-right !pr-5">Действия</th>
                 </tr>
               </thead>
@@ -416,6 +419,21 @@ export default function LeadsPage(p: Props) {
                         >
                           {Object.entries(STATUS_META).map(([id, m]) => <option key={id} value={id}>{m.label}</option>)}
                         </select>
+                      </td>
+                      <td className="td min-w-[170px]">
+                        <select
+                          value={lead.assigned_manager_id || ''}
+                          onChange={e => p.onAssignManager(lead.id, e.target.value)}
+                          onClick={e => e.stopPropagation()}
+                          className="w-full rounded-lg border border-line bg-ink-800 px-2 py-1.5 text-[12px] text-slate-200 outline-none focus:border-indigo-500"
+                          aria-label={`Ответственный для ${lead.company_name}`}
+                        >
+                          <option value="">Не назначен{lead.sector_id ? ' · сектор без менеджера' : ''}</option>
+                          {p.managers.map(manager => <option key={manager.id} value={manager.id}>{manager.name}</option>)}
+                        </select>
+                        <div className="text-[10px] text-slate-600 mt-1">
+                          {lead.assignment_source === 'manual' ? 'Вручную' : lead.sector_id ? 'По сектору' : 'Назначьте менеджера'}
+                        </div>
                       </td>
                       <td className="td !pr-4">
                         <div className="flex items-center justify-end gap-1">
