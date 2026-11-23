@@ -840,8 +840,14 @@ async function launchPipelineJob(params: {
       const knownLeadKeys = new Set(existingLeads.flatMap((lead: any) => getLeadDedupeKeys(lead)))
 
       let addedCount = 0
+      let rejectedCount = 0
       await updateJob(jobId, { stage: 'save', processed: 0, total: newLeads.length, message: stageText.save })
       for (const [index, lead] of newLeads.entries()) {
+        if (lead.qualification_status === 'not_qualified') {
+          rejectedCount++
+          await updateJob(jobId, { stage: 'save', processed: index + 1, total: newLeads.length, message: stageText.save })
+          continue
+        }
         const dedupeKeys = getLeadDedupeKeys(lead)
         if (!dedupeKeys.some(key => knownLeadKeys.has(key))) {
           const savedLead = {
@@ -864,9 +870,9 @@ async function launchPipelineJob(params: {
         await updateJob(jobId, { stage: 'save', processed: index + 1, total: newLeads.length, message: stageText.save })
       }
 
-      const message = addedCount > 0
-        ? `Найдено ${newLeads.length}, добавлено ${addedCount} новых лидов`
-        : `Найдено ${newLeads.length} компаний, все уже есть в базе`
+      const qualifiedCount = newLeads.filter((lead: any) => lead.qualification_status === 'qualified').length
+      const reviewCount = newLeads.filter((lead: any) => lead.qualification_status !== 'qualified' && lead.qualification_status !== 'not_qualified').length
+      const message = `Проверено ${newLeads.length}: профиль подтверждён — ${qualifiedCount}, на ручную проверку — ${reviewCount}, отклонено — ${rejectedCount}; добавлено ${addedCount} новых лидов`
       await updateJob(jobId, { status: 'done', stage: 'done', processed: newLeads.length, total: newLeads.length, added: addedCount, totalFound: newLeads.length, message })
       console.log(`✅ Job ${jobId}: ${message}`)
       onComplete?.({ status: 'done', found: newLeads.length, added: addedCount })
