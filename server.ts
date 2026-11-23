@@ -107,7 +107,7 @@ function pointInRing(lng: number, lat: number, ring: [number, number][]): boolea
 async function assignLeadToKnownSector(lead: any): Promise<void> {
   if (lead?.assignment_source === 'manual') return
   if (!hasValidCoordinates(lead?.coordinates)) {
-    if (lead?.sector_id) await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
+    if (lead?.sector_id) await db.leads.update(lead.id, { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined }, lead.revision)
     return
   }
   const sectors = await db.sectors.list()
@@ -117,7 +117,7 @@ async function assignLeadToKnownSector(lead: any): Promise<void> {
   })
   await db.leads.update(lead.id, sector
     ? { sector_id: sector.id, assigned_manager_id: sector.manager_id || undefined, assignment_source: 'sector' }
-    : { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined })
+    : { sector_id: undefined, assigned_manager_id: undefined, assignment_source: undefined }, lead.revision)
 }
 
 // Безопасное имя файла КП (защита от path traversal)
@@ -245,7 +245,8 @@ app.post('/api/leads/import', async (req, res) => {
       const rawBrands = Array.isArray(raw?.brands) ? raw.brands : String(raw?.brands || '').split(/[;,|]/)
       const brands = [...new Set(rawBrands.map((brand: any) => String(brand).trim()).filter(Boolean))].slice(0, 30)
       const lat = Number(raw?.lat), lng = Number(raw?.lng)
-      const hasCoordinates = Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+      const supplied = (v: unknown) => typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')
+      const hasCoordinates = supplied(raw?.lat) && supplied(raw?.lng) && Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
       const lead: any = {
         company_name, domain, city, industry, address: String(raw?.address || '').trim().slice(0, 250),
         phone: String(raw?.phone || '').trim().slice(0, 80),
@@ -319,7 +320,16 @@ app.post('/api/leads/:id/follow-up', async (req, res) => {
 })
 
 app.put('/api/leads/:id', async (req, res) => {
+  const editable = new Set(['company_name','domain','city','industry','address','phone','brands','lpr','lpr_emails','email_source','status','status_history','comments','assigned_manager_id'])
+  if (Object.keys(req.body || {}).some(key => !editable.has(key))) return res.status(400).json({error:'Поле недоступно для ручного изменения'})
   const body: any = { ...req.body }
+  const original = await db.leads.get(req.params.id)
+  if (!original) return res.status(404).json({error:'Лид не найден'})
+  delete body.email_source
+  if (body.lpr_emails !== undefined && Array.isArray(body.lpr_emails)) {
+    body.email_source = JSON.stringify(body.lpr_emails) === JSON.stringify(original.lpr_emails)
+      ? original.email_source : body.lpr_emails.length ? 'manual' : 'none'
+  }
   if (body.company_name !== undefined) {
     body.company_name = String(body.company_name || '').trim()
     if (body.company_name.length < 2 || body.company_name.length > 200) {
@@ -343,7 +353,7 @@ app.put('/api/leads/:id', async (req, res) => {
     body.lpr = body.lpr.map((person: any) => ({
       name: String(person?.name || '').trim().slice(0, 120),
       position: String(person?.position || '').trim().slice(0, 120),
-      evidence: String(person?.evidence || '').trim().slice(0, 1000),
+      evidence: (original.lpr || []).find((x: any) => x.name === person?.name && x.position === person?.position)?.evidence || '',
     })).filter((person: any) => person.name)
   }
   if (body.lpr_emails !== undefined) {
@@ -404,7 +414,7 @@ const recheckRateLimit = createRateLimiter({
   message: 'Этот лид уже недавно отправляли на перепроверку. Подождите несколько минут.'
 })
 const MAX_CONCURRENT_RECHECKS = Math.max(1, Math.min(4, Number.parseInt(process.env.MAX_CONCURRENT_RECHECKS || '2', 10) || 2))
-const activeRecheckJobs = new Set<string>()
+const activeRecheckJobs = new Map<string, string>()
 
 app.post('/api/leads/:id/recheck', recheckRateLimit, async (req: any, res) => {
   const lead = await db.leads.get(req.params.id)
@@ -417,6 +427,7 @@ app.post('/api/leads/:id/recheck', recheckRateLimit, async (req: any, res) => {
   if (!city || !industry) return res.status(422).json({ error: 'Не удалось определить город и отрасль исходного поиска' })
 
   const runningForLead = Object.values(pipelineJobs).find((job: any) => job.kind === 'recheck' && job.lead_id === lead.id && job.status === 'running') as any
+  if (runningForLead && runningForLead.owner_email !== req.user.email) return res.status(409).json({error:'Лид уже проверяется'})
   if (runningForLead) return res.status(202).json({ jobId: runningForLead.id, alreadyRunning: true })
   if (activeRecheckJobs.size >= MAX_CONCURRENT_RECHECKS) {
     res.setHeader('Retry-After', '60')
@@ -447,14 +458,20 @@ app.post('/api/leads/:id/recheck', recheckRateLimit, async (req: any, res) => {
     message: 'Перепроверяем сайт и доказательства...',
     startedAt: new Date().toISOString(),
   }
+  if (activeRecheckJobs.has(lead.id)) return res.status(409).json({error:'Лид уже проверяется'})
+  activeRecheckJobs.set(lead.id, jobId)
+  let release: (() => Promise<void>) | null = null
   try {
+    release = await db.jobs.reserveRecheck(jobId, lead.id, MAX_CONCURRENT_RECHECKS)
+    if (!release) { activeRecheckJobs.delete(lead.id); return res.status(429).json({error:'Перепроверка уже выполняется или очередь занята'}) }
     await db.jobs.create(job)
   } catch (error) {
+    activeRecheckJobs.delete(lead.id)
+    await release?.()
     console.error('❌ Не удалось создать задачу перепроверки:', error)
     return res.status(503).json({ error: 'Не удалось поставить перепроверку в очередь. Попробуйте позже.' })
   }
   pipelineJobs[jobId] = job
-  activeRecheckJobs.add(jobId)
 
   void (async () => {
     try {
@@ -502,16 +519,17 @@ app.post('/api/leads/:id/recheck', recheckRateLimit, async (req: any, res) => {
       sector_id: manualAssignment ? lead.sector_id : undefined,
       assigned_manager_id: manualAssignment ? lead.assigned_manager_id : undefined,
       assignment_source: manualAssignment ? 'manual' : undefined
-    })
-    if (!updated) throw new Error('Лид не найден')
+    }, Number(lead.revision || 0))
+    if (!updated) throw new Error('Карточка изменилась во время проверки. Повторите проверку.')
     await assignLeadToKnownSector(updated)
     const freshLead = await db.leads.get(lead.id)
     await updateJob(jobId, { status: 'done', stage: 'done', processed: 1, message: 'Перепроверка завершена', llm_status: freshLead?.llm_status || 'unknown' })
     } catch (error: any) {
       console.error('❌ Повторная проверка лида завершилась ошибкой:', error)
-      await updateJob(jobId, { status: 'error', error: 'Не удалось повторно проверить лид. Проверьте доступность Firecrawl и LLM.' })
+      await updateJob(jobId, { status: 'error', error: error?.message?.startsWith('Карточка изменилась') ? error.message : 'Не удалось повторно проверить лид. Проверьте доступность Firecrawl и LLM.' })
     } finally {
-      activeRecheckJobs.delete(jobId)
+      await release?.()
+      activeRecheckJobs.delete(lead.id)
     }
   })()
 
@@ -936,7 +954,7 @@ async function launchPipelineJob(params: {
   const { city, industry, limit, options, source, onComplete } = params
   const safeLimit = Math.min(Math.max(parseInt(limit as any) || 5, 1), 20)
 
-  const running = Object.values(pipelineJobs).find((j: any) => j.status === 'running')
+  const running = Object.values(pipelineJobs).find((j: any) => j.kind !== 'recheck' && j.status === 'running')
   if (running) return null
 
   const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -1207,6 +1225,7 @@ async function main() {
 
   const staleJobSweep = setInterval(async () => {
     try {
+      if (dbMode() === 'pg') await db.jobs.markOrphanedRechecksAsError()
       const recovered = await db.jobs.markStaleRunningAsError()
       if (recovered) console.log(`⚠️ Помечено прерванными после истечения lease: ${recovered} задач`)
     } catch (error) {
@@ -1222,7 +1241,7 @@ async function main() {
   const shutdown = async () => {
     console.log('🛑 Остановка...')
     clearInterval(staleJobSweep)
-    const active = Object.values(pipelineJobs).find((job: any) => job.status === 'running') as any
+    const active = Object.values(pipelineJobs).find((job: any) => job.kind !== 'recheck' && job.status === 'running') as any
     if (active) {
       await updateJob(active.id, { status: 'error', error: 'Сервер остановлен во время выполнения задачи' })
       if (active.search_task_id) {

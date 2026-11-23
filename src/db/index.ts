@@ -55,6 +55,7 @@ async function runSchema() {
 export async function initDb(): Promise<'pg' | 'json'> {
   const url = process.env.DATABASE_URL || ''
 
+  if (url === 'pgmem://test' && process.env.NODE_ENV !== 'test') throw new Error('pgmem разрешён только при NODE_ENV=test')
   if (url === 'pgmem://test') {
     const { newDb } = await import('pg-mem')
     pgmemDb = newDb()
@@ -203,6 +204,7 @@ async function seedUsersJsonIfEmpty() {
 function normalizeLead(l: any) {
   return {
     ...l.data,
+    revision: Number(l.revision || 0),
     id: l.id,
     status: l.status ?? l.data?.status,
     lead_tier: l.lead_tier ?? l.data?.lead_tier,
@@ -264,20 +266,29 @@ export const db = {
       }
       await insertLead(lead)
     },
-    async update(id: string, patch: any): Promise<any | null> {
+    async update(id: string, patch: any, expectedRevision?: number): Promise<any | null> {
       if (mode === 'json') {
         const all = jsonStore.read('leads_db.json', [])
-        const idx = all.findIndex((l: any) => l.id === id)
-        if (idx === -1) return null
-        all[idx] = { ...all[idx], ...patch }
+        const idx = all.findIndex((lead: any) => lead.id === id)
+        if (idx < 0) return null
+        const revision = Number(all[idx].revision || 0)
+        if (expectedRevision !== undefined && expectedRevision !== revision) return null
+        all[idx] = { ...all[idx], ...patch, revision: revision + 1 }
         jsonStore.write('leads_db.json', all)
         return all[idx]
       }
-      const cur = await db.leads.get(id)
-      if (!cur) return null
-      const next = { ...cur, ...patch }
-      await insertLead(next)
-      return next
+      const changes = Object.fromEntries(Object.entries(patch).map(([k,v]) => [k,v ?? null]))
+      const columns = ['domain','status','lead_tier','lead_score','search_task_id','sector_id','assigned_manager_id']
+      const params: any[] = [id, JSON.stringify(changes), expectedRevision ?? null]
+      const assignments = ['data = data || $2::jsonb', 'revision = revision + 1']
+      for (const column of columns) {
+        if (!Object.hasOwnProperty.call(changes, column)) continue
+        params.push(changes[column])
+        assignments.push(column + ' = $' + params.length)
+      }
+      const rows = await exec!(`UPDATE leads SET ${assignments.join(', ')}
+        WHERE id=$1 AND ($3::bigint IS NULL OR revision=$3) RETURNING *`, params)
+      return rows.length ? normalizeLead(rows[0]) : null
     },
     async remove(id: string): Promise<boolean> {
       if (mode === 'json') {
@@ -461,6 +472,24 @@ export const db = {
       }
       return rows.length
     },
+    async reserveRecheck(jobId: string, leadId: string, capacity: number) {
+      if (!pgPool) return async () => {}
+      // Session locks expire automatically when a worker disconnects.
+      const client = await pgPool.connect()
+      const lock = async (group: number, key: string) =>
+        (await client.query('SELECT pg_try_advisory_lock($1::int,hashtext($2)) AS ok', [group,key])).rows[0].ok
+      // Destroy this dedicated connection to release exactly its locks.
+      const release = async () => { client.release(true) }
+      try {
+        if (await lock(101,leadId) && await lock(102,jobId)) {
+          for (let slot=0; slot<capacity; slot++) {
+            if (await lock(103,String(slot))) return release
+          }
+        }
+        await release()
+        return null
+      } catch (error) { await release(); throw error }
+    },
     async markOrphanedRechecksAsError(): Promise<number> {
       if (mode === 'json') {
         const all = jsonStore.read('jobs_db.json', [])
@@ -475,11 +504,10 @@ export const db = {
         if (count) jsonStore.write('jobs_db.json', all)
         return count
       }
-      const rows = await exec!("SELECT id, data FROM jobs WHERE status = 'running' AND data->>'kind' = 'recheck'")
-      for (const row of rows) {
-        const next = { ...row.data, status: 'error', error: 'Перепроверка прервана перезапуском сервера; запустите её снова' }
-        await exec!('UPDATE jobs SET status = $2, data = $3 WHERE id = $1', [row.id, 'error', JSON.stringify(next)])
-      }
+      const rows = await exec!(`UPDATE jobs SET status='error',
+        data=data || $1::jsonb WHERE status='running' AND data->>'kind'='recheck'
+        AND pg_try_advisory_xact_lock(102,hashtext(id)) RETURNING id`,
+        [JSON.stringify({status:'error',error:'Перепроверка прервана перезапуском сервера'})])
       return rows.length
     },
   },
